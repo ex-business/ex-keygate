@@ -18,6 +18,8 @@ import (
 // developmentFlow 仅在显式启用模拟流程后、启动 HTTP 服务前创建，运行中不切换权限域或根。
 type developmentFlow struct {
 	mu                  sync.Mutex
+	plugins             map[string]*pluginRuntime
+	sealed              bool
 	roots               map[string]*storage.DevelopmentKeys
 	control             *storage.DevelopmentControl
 	keys                *storage.DevelopmentKeys
@@ -73,6 +75,7 @@ func (s *Service) EnableSimulatedFlow(ctx context.Context) error {
 		role := access.Approver
 		if i == 0 {
 			role = access.Requester
+			grants = append(grants, access.Grant{PrincipalID: p.ID, Role: access.PolicyAdmin})
 			grants = append(grants, access.Grant{PrincipalID: p.ID, Role: access.Auditor})
 			grants = append(grants, access.Grant{PrincipalID: p.ID, Role: access.EmergencyOperator})
 		}

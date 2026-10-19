@@ -142,6 +142,9 @@ func (s *Service) businessSession(w http.ResponseWriter, r *http.Request, write 
 }
 func (s *Service) flowRoutes(mux *http.ServeMux) {
 	f := s.flow
+	f.mu.Lock()
+	f.sealed = true
+	f.mu.Unlock()
 	handle := func(pattern string, next http.HandlerFunc) {
 		mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.RawQuery != "" || r.URL.ForceQuery {
@@ -156,6 +159,7 @@ func (s *Service) flowRoutes(mux *http.ServeMux) {
 			next(w, r)
 		})
 	}
+	s.providerRoutes(handle)
 	s.lifecycleRoutes(handle)
 	s.auditRoutes(handle)
 	handle("GET /api/config", func(w http.ResponseWriter, r *http.Request) {

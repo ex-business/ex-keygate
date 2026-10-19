@@ -37,8 +37,9 @@ type testApp struct {
 	service      *Service
 }
 
-func setup(t *testing.T) testApp { return setupFlow(t, false) }
-func setupFlow(t *testing.T, enabled bool) testApp {
+func setup(t *testing.T) testApp                   { return setupFlow(t, false) }
+func setupFlow(t *testing.T, enabled bool) testApp { return setupFlowPlugin(t, enabled, "") }
+func setupFlowPlugin(t *testing.T, enabled bool, pluginPath string) testApp {
 	t.Helper()
 	dsn := os.Getenv("KEYGATE_TEST_DATABASE_URL")
 	if dsn == "" {
@@ -88,6 +89,12 @@ func setupFlow(t *testing.T, enabled bool) testApp {
 		if err = service.EnableSimulatedFlow(ctx); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if enabled {
+		if err = service.ConfigureDevelopmentPlugins(ctx, pluginPath); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(service.ClosePlugins)
 	}
 	console.Config.Handler = service.Handler()
 	console.TLS = &tls.Config{MinVersion: tls.VersionTLS13}

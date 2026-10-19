@@ -49,6 +49,7 @@ func run() error {
 	databaseFile := flag.String("database-file", "data/dev-console/database-url", "Private disposable development database URL file")
 	ssoFile := flag.String("sso-file", "data/mock-sso/connection.json", "Development mock SSO connection metadata")
 	output := flag.String("output", "data/dev-console", "Private directory for public console CA and metadata")
+	pluginFile := flag.String("plugin-file", "", "受信的私有开发插件连接配置文件")
 	flag.Parse()
 	cfg, err := config.Load(os.Getenv)
 	if err != nil {
@@ -161,6 +162,14 @@ func run() error {
 		if err = service.EnableSimulatedFlow(startup); err != nil {
 			return errors.New("simulated key workflow initialization failed")
 		}
+	}
+	if *enableFlow {
+		if e := service.ConfigureDevelopmentPlugins(startup, *pluginFile); e != nil {
+			return errors.New("开发插件装配失败")
+		}
+		defer service.ClosePlugins()
+	} else if *pluginFile != "" {
+		return errors.New("插件装配必须显式开启开发流程")
 	}
 	cert, publicCA, err := devtls.Certificate("ExKeyGate Development Console")
 	if err != nil {

@@ -40,6 +40,7 @@ async function refresh() {
   try {config = await call('/api/config');}
   catch(error) {if(error.status!==403) throw error;config={profiles:[],rootId:''};}
   clients = await call('/api/clients');
+  await refreshProviders();
   const records = await call('/api/requests');
   const profiles = document.getElementById('profiles');
   profiles.replaceChildren();
@@ -74,7 +75,7 @@ document.getElementById('logout').addEventListener('click', async () => {
   try {
     await call('/auth/logout', 'POST');
     session = undefined; config = undefined; clients = [];
-    for (const id of ['requests', 'clients', 'profiles']) document.getElementById(id).replaceChildren();
+    for (const id of ['requests', 'clients', 'profiles', 'providers']) document.getElementById(id).replaceChildren();
     document.getElementById('client-state').textContent = '';
     document.getElementById('key-state').textContent = '';
     document.getElementById('identity').textContent = '已退出';
@@ -133,3 +134,24 @@ document.getElementById('audit').addEventListener('submit',e=>{e.preventDefault(
 document.getElementById('audit-exports').addEventListener('click',()=>submit(()=>call('/api/audit/exports')));
 document.getElementById('auth-failures').addEventListener('click',()=>submit(()=>call('/api/audit/auth-failures')));
 document.getElementById('audit-download').addEventListener('submit',async e=>{e.preventDefault();try{const id=new FormData(e.target).get('id');const response=await fetch(`/api/audit/exports/${encodeURIComponent(id)}`,{credentials:'same-origin'});if(!response.ok)throw new Error(`下载拒绝 ${response.status}`);const url=URL.createObjectURL(await response.blob());const link=document.createElement('a');link.href=url;link.download='keygate-audit.jsonl';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}catch(error){result.textContent=error.message;}});
+
+async function refreshProviders() {
+  const container = document.getElementById('providers');
+  container.replaceChildren();
+  let plugins;
+  try {plugins = await call('/api/providers');}
+  catch (error) {if (error.status !== 403) throw error;container.textContent='当前身份无全域插件查看权限';return;}
+  for (const item of plugins) {
+    const row=document.createElement('section');
+    const pre=document.createElement('pre');
+    pre.textContent=JSON.stringify(item,null,2);row.append(pre);
+    const policy=item.policy;
+    if (item.installedDigest && item.executor !== 'reserved') {
+      action(row,'申请启用当前安装配置（多人审批）',()=>call('/api/requests','POST',{kind:'provider_enable',clientId:'provider-management',expectedRevision:String(policy.Revision),providerId:policy.ID,providerDigest:item.installedDigest}));
+      if(policy.Enabled && policy.Digest===item.installedDigest) action(row,'健康检查 / 公开向量自检',()=>call(`/api/providers/${encodeURIComponent(policy.ID)}/check`,'POST',{}));
+    }
+    if(policy.Enabled) action(row,'应急停用插件',()=>call(`/api/providers/${encodeURIComponent(policy.ID)}/disable`,'POST',{}));
+    if(item.executor==='reserved') {const note=document.createElement('p');note.textContent='接口预留，尚无可执行实现';row.append(note);}
+    container.append(row);
+  }
+}

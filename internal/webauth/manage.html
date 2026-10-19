@@ -10,6 +10,10 @@
 <p id="identity">正在读取会话…</p>
 <button id="refresh" type="button">刷新状态</button>
 <button id="logout" type="button">退出</button>
+<h2>认证插件与硬件接口</h2>
+<p>内部软件插件控制当前密钥闭环。第三方 HTTPS/mTLS 插件目前提供健康检查与公开向量自检，真实客户端认证接入需另行实现。硬件、KMS/HSM 仅预留接口，不能启用。</p>
+<p>启用或切换配置需要全域管理员申请及两名审批人批准；应急停用立即生效。当前配置摘要必须与获批摘要一致。</p>
+<div id="providers"></div>
 <h2>1. 登记客户端</h2>
 <form id="create">
 <label>客户端 ID <input name="clientId" required maxlength="128"></label>
