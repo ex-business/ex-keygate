@@ -393,6 +393,7 @@ func (s *Service) flowRoutes(mux *http.ServeMux) {
 	s.h5Routes(mux)
 	mux.HandleFunc("GET /manage", s.managePage)
 	mux.HandleFunc("GET /manage.js", s.manageScript)
+	mux.HandleFunc("GET /manage.css", s.manageStyles)
 }
 func (s *Service) executeBusiness(w http.ResponseWriter, r *http.Request) {
 	token, ok := s.businessSession(w, r, true)

@@ -1,70 +1,43 @@
 <!doctype html>
-<html lang="zh">
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ExKeyGate 客户端与密钥</title>
-<h1>ExKeyGate 客户端与密钥</h1>
-<p><a href="/h5">H5 认证与 SDK 演示</a></p>
-<p><strong>开发模拟流程：</strong>客户端管理 → 密钥申请 → 多人审批 → 启用 → 认证 → 停用</p>
-<p>模拟账号仅用于功能验证。申请人 demo-requester；审批人 demo-approver-1、demo-approver-2。每个身份使用独立浏览器会话；这不代表真实的多人身份或 MFA。</p>
-<p><a href="/auth/login">通过 SSO 重新认证 / 切换身份</a> · <a href="/auth/session">查看会话</a></p>
-<p id="identity">正在读取会话…</p>
-<button id="refresh" type="button">刷新状态</button>
-<button id="logout" type="button">退出</button>
-<h2>本人二次验证</h2>
-<p>M-of-N 按不同人员依次流转；每人先完成自己的验证组合，再确认当前申请。验证码和会话不交给下一人。</p>
-<label>验证用途 <input id="mfa-purpose" value="management" maxlength="128"></label>
-<button id="mfa-start" type="button">开始本人验证</button>
-<p>management 用于管理会话；审批时由申请行的“验证本次申请”选择具体申请。未配置插件保持不可用。</p>
-<div id="mfa-factors"></div><pre id="mfa-state"></pre>
-<h2>认证插件与硬件接口</h2>
-<p>内部软件插件控制当前密钥闭环。第三方 HTTPS/mTLS 插件目前提供健康检查与公开向量自检，真实客户端认证接入需另行实现。硬件、KMS/HSM 仅预留接口，不能启用。</p>
-<p>启用或切换配置需要全域管理员申请及两名审批人批准；应急停用立即生效。当前配置摘要必须与获批摘要一致。</p>
-<div id="providers"></div>
-<h2>1. 登记客户端</h2>
-<form id="create">
-<label>客户端 ID <input name="clientId" required maxlength="128"></label>
-<label>名称 <input name="name" required maxlength="128"></label>
-<label>客户端类型 <select name="profileId" id="profiles"></select></label>
-<button>提交创建申请</button>
-</form>
-<h2>2. 密钥申请、启用与停用</h2>
-<p>后端客户端的密钥由接收方 CLI 加密领取。将 CLI 生成的公开接收方配置粘贴到下方；私钥与共享密钥保存在接收方本机。</p>
-<form id="key-operation">
-<label>客户端 <select name="clientId" id="clients"></select></label>
-<label>密钥版本 <input name="keyVersion" type="number" min="1" value="1" required></label>
-<label>操作 <select name="kind"><option value="key_issue">申请密钥</option><option value="key_activate">申请启用</option><option value="key_disable">申请停用</option><option value="recovery_issue">申请隔离恢复签发</option><option value="recovery_activate">申请正式恢复</option></select></label>
-<p><label>接收方公开配置（申请密钥时填写）<br><textarea name="recipient" rows="5" cols="85"></textarea></label></p>
-<p><label>轮换时旧版本退役截止时间（UTC，首次启用留空）<input name="retireAt" placeholder="2026-10-19T12:05:00.000Z"></label></p>
-<p>隔离恢复时填写同一恢复 ID、事件 ID 和证据 SHA-256；客户端须已停用。准备与正式恢复分别审批。</p>
-<label>恢复 ID <input name="recoveryId" maxlength="128"></label><label>事件 ID <input name="incidentId" maxlength="128"></label><label>证据摘要 <input name="evidenceHash" maxlength="64"></label>
-<button>提交操作申请</button>
-<p><label>轮换来源版本（普通签发留空）<input name="rotationOf" type="number" min="1"><select name="rotationReason"><option value="scheduled">例行轮换</option><option value="expiry">即将到期</option><option value="manual">人工轮换</option></select></label></p>
-<button id="lifecycle-status" type="button">查看版本、轮换及到期提醒</button>
-<button id="lifecycle-maintain" type="button">收尾已到期任务</button>
-<button id="key-status" type="button">查询密钥状态</button>
-</form>
-<h2>异常恢复</h2>
-<button id="recovery-status" type="button">查询当前客户端恢复任务</button>
-<form id="abort-recovery"><label>恢复 ID <input name="id" required></label><button>中止恢复并保持隔离</button></form>
-<form id="provision-root"><label>新的软件根 ID <input name="rootId" required maxlength="128"></label><button>申请新基础根（需多人批准）</button></form>
-<h2>泄露撤销</h2>
-<p>撤销立即减权且不可恢复；根撤销会隔离依赖客户端。原版本即使误报也不能重新启用。</p>
-<form id="revoke"><label>事件 ID <input name="incidentId" required maxlength="128"></label><label>范围 <select name="scope"><option value="version">当前客户端及版本</option><option value="root">当前基础根及全部依赖</option></select></label><label>原因 <select name="reason"><option value="suspected_leak">疑似泄露</option><option value="confirmed_leak">确认泄露</option><option value="lost_delivery">交付丢失</option><option value="scope_unknown">影响范围未知</option></select></label><button>立即撤销</button></form>
-<h2>3. 审阅与审批</h2>
-<p>核对清单、摘要、版本和接收方指纹后投票。达到冻结清单的 M 名独立审批人门槛后，由原申请人点击执行。顺序模式只允许当前人员验证并确认，随后交给下一人；同一个人不重复占票。领取和持有证明完成后，另行发起启用申请。</p>
-<div id="requests"></div>
-<h2>客户端状态</h2>
-<pre id="client-state"></pre>
-<h2>密钥状态</h2>
-<p>客户端状态与密钥状态分别管理；客户端 enabled 不代表每个密钥版本均已启用。</p>
-<pre id="key-state"></pre>
-<h2>审计</h2>
-<p>仅 auditor 可访问。模拟 demo-requester 显式授予开发审计权限。范围留空表示全域；导出是最多 5000 条的 JSONL 快照，十分钟过期，下载会再次核验近期登录和权限。</p>
-<form id="audit"><label>客户端范围 <input name="clientId"></label><label>操作 <input name="action"></label><label>结果 <input name="result"></label><label>请求 ID <input name="requestId"></label><label>对象 ID <input name="targetId"></label><label>起始序号 <input name="after" value="0" type="number" min="0"></label><button name="mode" value="query">查询最近一天（100 条）</button><button name="mode" value="export">创建最近一天快照</button></form>
-<button id="audit-exports" type="button">查看我的导出任务</button><button id="auth-failures" type="button">查看认证失败聚合</button>
-<form id="audit-download"><label>导出 ID <input name="id" required></label><button>下载 JSONL</button></form>
-<h2>处理结果</h2>
-<pre id="result" role="status"></pre>
-<script src="/manage.js" defer></script>
-</html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ExKeyGate · 密钥与认证管理</title><link rel="stylesheet" href="/manage.css"><script src="/manage.js" defer></script></head>
+<body>
+<a class="skip-link" href="#content">跳到主要内容</a>
+<header class="app-header"><a class="brand" href="#overview" aria-label="ExKeyGate 工作台"><span class="brand-mark" aria-hidden="true">K</span><strong>ExKeyGate</strong><span class="brand-caption">密钥与认证</span></a><div class="header-right"><span id="environment" class="badge neutral">正在连接</span><span class="header-divider"></span><button class="icon-button" id="refresh" aria-label="刷新数据" title="刷新数据">↻</button><a class="button plain small" id="login" href="/auth/login">SSO 登录</a><span id="user-name" hidden></span><button class="plain small" id="logout" hidden>退出</button></div></header>
+<aside class="sidebar"><div class="nav-heading">工作空间 <button id="collapse-nav" class="icon-button" aria-label="收起侧栏" aria-expanded="true">‹</button></div><nav aria-label="主导航">
+<a href="#overview" data-nav="overview" aria-label="工作台" title="工作台"><span data-icon="grid"></span><span>工作台</span></a>
+<a href="#approvals" data-nav="approvals" aria-label="审批中心" title="审批中心"><span data-icon="approval"></span><span>审批中心</span><b class="nav-count" id="todo-count" hidden>0</b></a>
+<div class="nav-group">资源管理</div>
+<a href="#clients" data-nav="clients" aria-label="客户端管理" title="客户端管理"><span data-icon="clients"></span><span>客户端管理</span></a>
+<a href="#keys" data-nav="keys" aria-label="密钥管理" title="密钥管理"><span data-icon="key"></span><span>密钥管理</span></a>
+<a href="#verification" data-nav="verification" aria-label="验证与绑定" title="验证与绑定"><span data-icon="shield"></span><span>验证与绑定</span></a>
+<div class="nav-group">配置与治理</div>
+<a href="#policies" data-nav="policies" aria-label="审批策略" title="审批策略"><span data-icon="flow"></span><span>审批策略</span></a>
+<a href="#people" data-nav="people" aria-label="人员与权限" title="人员与权限"><span data-icon="people"></span><span>人员与权限</span></a>
+<a href="#plugins" data-nav="plugins" aria-label="插件管理" title="插件管理"><span data-icon="plug"></span><span>插件管理</span></a>
+<a href="#audit" data-nav="audit" aria-label="审计日志" title="审计日志"><span data-icon="audit"></span><span>审计日志</span></a>
+</nav><div class="sidebar-foot"><span class="status-dot"></span><span>Ex 系列 · 安全基础服务</span></div></aside>
+<main id="content" tabindex="-1"><div class="breadcrumb">工作空间 <span>/</span> <strong id="breadcrumb">工作台</strong></div>
+<div class="page-heading"><div><h1 id="page-title">工作台</h1><p id="page-description">查看客户端、审批待办与当前安全状态。</p></div><div id="page-actions"></div></div>
+<div id="session-banner" class="notice" hidden></div><div id="page-error" class="notice danger" role="alert" hidden></div>
+<section data-page="overview">
+<div class="metrics"><article class="metric"><div>客户端总数 <span data-icon="clients"></span></div><strong id="metric-clients">—</strong><small>当前可见的客户端</small></article><article class="metric"><div>已启用客户端 <span data-icon="shield"></span></div><strong id="metric-enabled">—</strong><small>以权威状态为准</small></article><article class="metric"><div>待我处理 <span data-icon="approval"></span></div><strong id="metric-todo">—</strong><small>当前轮到本人确认</small></article><article class="metric"><div>待执行申请 <span data-icon="flow"></span></div><strong id="metric-execute">—</strong><small>已获批，等待申请人执行</small></article></div>
+<div class="overview-grid"><article class="panel"><div class="panel-heading"><h2>待我处理 <span class="subtle">审批与验证</span></h2><a href="#approvals" class="text-link">查看全部 →</a></div><div id="overview-todos"></div></article><article class="panel policy-summary"><div class="panel-heading"><h2>当前审批策略</h2><a href="#policies" class="text-link">查看策略</a></div><div id="overview-policy"></div></article></div>
+<div class="overview-grid"><article class="panel"><div class="panel-heading"><h2>最近申请</h2><span class="subtle">仅展示当前有权查看的记录</span></div><div id="overview-recent"></div></article><article class="panel"><div class="panel-heading"><h2>本人验证状态</h2><a href="#verification" class="text-link">管理验证</a></div><div id="overview-verification" class="panel-body"></div></article></div>
+</section>
+<section data-page="clients" hidden><div class="panel"><div class="toolbar"><label class="search"><span data-icon="search"></span><input id="client-search" type="search" placeholder="搜索客户端名称或标识" aria-label="搜索客户端"></label><select id="client-type" aria-label="客户端类型"><option value="">全部类型</option><option value="backend">服务端</option><option value="browser">浏览器 H5</option><option value="mobile">移动端</option><option value="desktop">桌面端</option></select><select id="client-status" aria-label="客户端状态"><option value="">全部状态</option><option value="enabled">已启用</option><option value="disabled">已停用</option></select></div><div id="client-table"></div><div class="table-footer" id="client-pagination"></div></div></section>
+<section data-page="keys" hidden><div class="panel"><div class="toolbar"><label class="inline-label">客户端<select id="key-client" aria-label="选择密钥所属客户端"><option value="">请选择客户端</option></select></label><button id="load-keys" class="plain">查询版本</button><span class="toolbar-spacer"></span><button id="issue-key">申请密钥</button></div><div id="key-table"></div></div><div class="panel"><div class="panel-heading"><h2>异常恢复</h2><button class="plain small" id="load-recoveries">刷新恢复任务</button></div><div id="recovery-table"></div><div class="panel-foot"><button class="plain small" id="new-root">申请新的基础根</button><span class="subtle">撤销后保持隔离，重新启用需要独立审批。</span></div></div></section>
+<section data-page="approvals" hidden><div class="panel"><div class="toolbar"><div class="segmented" id="approval-tabs"><button data-filter="mine" class="active">待我处理</button><button data-filter="all">全部申请</button><button data-filter="applicant">我发起的</button><button data-filter="execute">待我执行</button></div><span class="toolbar-spacer"></span><select id="approval-status" aria-label="申请状态"><option value="">全部状态</option><option value="pending">审批中</option><option value="approved">已批准</option><option value="executed">已执行</option><option value="rejected">已拒绝</option><option value="expired">已过期</option></select></div><div id="approval-table"></div><div class="table-footer" id="approval-footer"></div></div></section>
+<section data-page="verification" hidden><div class="panel"><div class="panel-heading"><h2>本人验证方式</h2><button id="verify-management">完成本人验证</button></div><div class="panel-body"><p class="section-description">每人使用自己的验证方式。完成本人验证后，才可操作管理功能；每笔审批还需要针对该申请单独验证。</p><div id="factor-cards" class="factor-grid"></div></div></div><div class="panel"><div class="panel-heading"><h2>绑定与丢失恢复</h2><span class="badge neutral">受控维护</span></div><div class="panel-body"><div class="process"><span>核验本人身份</span><b>→</b><span>两名独立人员确认</span><b>→</b><span>更新绑定并撤销旧证明</span></div><p class="section-description">首次绑定、换绑和丢失恢复采用受控离线流程。未配置邮件、短信或硬件插件时，不降低验证门槛，也不提供跳过验证的找回入口。</p><button class="plain" id="binding-guide">查看绑定要求</button></div></div></section>
+<section data-page="policies" hidden><div id="policy-view"></div></section>
+<section data-page="people" hidden><div class="panel"><div class="panel-heading"><h2>已登记人员与授权范围</h2><span class="badge neutral">本地授权 · 只读</span></div><div id="people-table"></div><div class="panel-foot subtle">身份由 SSO 提供；登录不自动授予角色。授权调整由受控流程维护。</div></div></section>
+<section data-page="plugins" hidden><div id="plugin-cards" class="plugin-grid"></div><div class="panel"><div class="panel-heading"><h2>本人验证插件</h2><a class="text-link" href="#verification">查看绑定</a></div><div id="mfa-plugin-table"></div></div></section>
+<section data-page="audit" hidden><div class="panel"><form id="audit-form" class="toolbar wrap"><label>操作<select name="action"><option value="">全部操作</option><option value="control_submit">提交申请</option><option value="control_vote">审批确认</option><option value="control_handoff">人员交接</option><option value="control_skip">本人放弃</option><option value="mfa_factor_verify">二次验证</option><option value="session_create">登录</option></select></label><label>客户端范围<input name="clientId" placeholder="全部授权范围"></label><label>开始日期<input name="from" type="date" required></label><label>结束日期<input name="until" type="date" required></label><button>查询日志</button><button type="button" class="plain" id="export-audit">导出日志</button></form><div id="audit-table"></div><div class="table-footer" id="audit-footer">查询最多返回100条，导出最多5000条。</div></div><div class="panel"><div class="panel-heading"><h2>我的导出任务</h2><button class="plain small" id="load-exports">刷新</button></div><div id="export-table"></div></div></section>
+<footer class="content-footer"><span>ExKeyGate · 密钥与认证管理</span><a href="/h5">H5 接入演示 ↗</a></footer>
+</main>
+<dialog id="work-dialog" aria-labelledby="dialog-title"><div class="dialog-heading"><div><span id="dialog-kicker" class="eyebrow"></span><h2 id="dialog-title"></h2></div><button class="icon-button close-dialog" aria-label="关闭对话框">×</button></div><div id="dialog-body" class="dialog-body"></div><div id="dialog-error" class="notice danger" role="alert" hidden></div><div id="dialog-actions" class="dialog-actions"></div></dialog>
+<dialog id="mfa-dialog" aria-labelledby="mfa-title"><div class="dialog-heading"><div><span class="eyebrow">身份安全</span><h2 id="mfa-title">完成本人验证</h2></div><button class="icon-button close-dialog" aria-label="关闭验证">×</button></div><div class="dialog-body"><p id="mfa-context" class="section-description"></p><div id="mfa-progress"></div><div id="mfa-factors"></div><p id="mfa-error" class="notice danger" role="alert" hidden></p></div><div class="dialog-actions"><button class="plain close-dialog">稍后处理</button><button id="mfa-finish" hidden>返回确认</button></div></dialog>
+<div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+<template id="client-form-template"><form id="create" class="form-grid"><label class="full">客户端名称<input name="name" required maxlength="128" placeholder="例如：订单服务 / 运营门户" autocomplete="off"></label><label>客户端标识<input name="clientId" required maxlength="128" pattern="[a-zA-Z0-9][a-zA-Z0-9._\-]{0,127}" autocomplete="off"><small>用于接入配置，创建后保持不变。</small></label><label>接入类型<select name="profileId" id="profiles" required></select></label><div class="notice full">创建申请将按当前策略逐人审批，批准后由你确认执行。</div></form></template>
+<template id="key-form-template"><form id="key-operation" class="form-grid"><label class="full">客户端<select name="clientId" required></select></label><label>操作<select name="kind"><option value="key_issue">签发新版本</option><option value="key_activate">启用版本</option><option value="key_disable">停用版本</option><option value="recovery_issue">隔离恢复：准备新版本</option><option value="recovery_activate">隔离恢复：正式启用</option></select></label><label>密钥版本<input name="keyVersion" type="number" min="1" value="1" required></label><label class="full" data-issue>接收方公开配置文件<input name="recipientFile" type="file" accept=".json,application/json"><small>选择接收方工具生成的公开配置文件。请勿上传私钥。</small></label><div class="file-summary full" id="recipient-summary" hidden></div><label data-issue>有效期<select name="validHours"><option value="1">1 小时</option><option value="4">4 小时</option><option value="24">24 小时</option></select></label><label data-issue>轮换旧版本（可选）<input name="rotationOf" type="number" min="1" placeholder="首次签发留空"></label><label data-retire hidden>旧版本退役时间<input name="retireAt" type="datetime-local"></label><label data-recovery hidden>恢复任务标识<input name="recoveryId" maxlength="128"></label><label data-recovery hidden>事件标识<input name="incidentId" maxlength="128"></label><label class="full" data-recovery hidden>已核验证据的 SHA-256 摘要<input name="evidenceHash" pattern="[a-f0-9]{64}" maxlength="64"></label><p class="notice full">提交后需要多人审批。接收方在自己的设备上完成密钥领取和持有证明，后台不展示密钥明文。</p></form></template>
+</body></html>

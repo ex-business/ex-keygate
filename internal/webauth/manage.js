@@ -1,214 +1,182 @@
 'use strict';
-let session;
-let config;
-let clients = [];
-const result = document.getElementById('result');
-async function call(path, method = 'GET', data) {
-  const headers = {};
-  if (method === 'POST') {
-    headers['Content-Type'] = 'application/json';
-    headers['X-CSRF-Token'] = session?.csrfToken || '';
-    headers['X-Idempotency-Key'] = crypto.randomUUID();
-  }
-  const response = await fetch(path, {method, headers, credentials: 'same-origin', body: data === undefined ? undefined : JSON.stringify(data)});
-  const text = await response.text();
-  if (!response.ok) {const error=new Error(`${response.status}: ${text}`);error.status=response.status;throw error;}
-  return text ? JSON.parse(text) : null;
+// 管理页只呈现服务器授权结果；隐藏按钮用于减少误操作，不能代替服务端的权限与MFA检查。
+const $ = selector => document.querySelector(selector);
+const state = {session:null, context:null, settings:null, config:null, clients:null, requests:null, plugins:null, errors:{}, page:'overview', approvalFilter:'mine', clientPage:0, selectedClient:'', keyRows:[], keyEpoch:0, recoveryEpoch:0, auditEpoch:0, exportEpoch:0, dialogEpoch:0, mfaEpoch:0, mfa:null, verified:new Map(), epoch:0};
+const labels = {
+ pages:{overview:['工作台','查看客户端、审批待办与当前安全状态。'],clients:['客户端管理','登记接入应用，查看客户端状态与认证方式。'],keys:['密钥管理','管理签发、轮换、启用和撤销，所有关键变更均经过审批。'],approvals:['审批中心','按冻结的人员顺序验证、确认与交接。'],verification:['验证与绑定','使用本人的验证方式，保护管理与审批操作。'],policies:['审批策略','查看 M-of-N 人员门槛、顺序与受控变更要求。'],people:['人员与权限','查看本地登记人员和当前授权范围。'],plugins:['插件管理','查看安装配置、启用状态与待接入能力。'],audit:['审计日志','按条件查询操作记录，下载本人有权访问的审计快照。']},
+ methods:{email:'邮件验证码',sms:'短信验证码',totp:'TOTP 动态码',hardware:'硬件安全密钥'},
+ types:{backend:'服务端',browser:'浏览器 H5',mobile:'移动端',desktop:'桌面端'},
+ roles:{viewer:'资源查看',requester:'申请人',approver:'审批人',policy_admin:'策略管理员',auditor:'审计员',emergency_operator:'应急操作'},
+ operations:{client_create:'登记客户端',key_issue:'签发密钥',key_activate:'启用密钥',key_disable:'停用密钥',root_provision:'配置新的基础根',provider_enable:'启用插件配置',recovery_issue:'隔离恢复：准备密钥',recovery_activate:'隔离恢复：正式启用'},
+ states:{enabled:['已启用','success'],disabled:['已停用','neutral'],pending:['审批中','warning'],approved:['已批准','blue'],rejected:['已拒绝','danger'],executed:['已执行','success'],expired:['已过期','neutral'],cancelled:['已取消','neutral'],active:['使用中','success'],staged:['等待启用','blue'],retiring:['退役中','warning'],claimed:['已领取','blue'],revoked:['已撤销','danger'],completed:['已完成','success'],aborted:['已中止','neutral']},
+ actions:{control_submit:'提交申请',control_vote:'审批确认',control_handoff:'人员交接',control_skip:'本人放弃',mfa_factor_verify:'二次验证',session_create:'登录',session_revoke:'退出登录',control_execute:'执行申请',mfa_start:'发起验证'}
+};
+const paths = {grid:'M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z',approval:'M9 3H5v18h14V3h-4 M9 2h6v4H9z M8 13l3 3 5-6',clients:'M3 4h18v12H3z M8 20h8 M12 16v4',key:'M14 9a5 5 0 1 0-3 4L4 20H1v-3l8-8 M17 6h.01',shield:'M12 2l8 4v6c0 5-8 10-8 10S4 17 4 12V6z M8 12l3 3 5-6',flow:'M9 2h6v5H9z M2 17h6v5H2z M16 17h6v5h-6z M12 7v5 M5 17v-5h14v5',people:'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2 M9 3a4 4 0 1 0 0 8 4 4 0 0 0 0-8 M17 4a4 4 0 0 1 0 7 M22 21v-2a4 4 0 0 0-3-4',plug:'M8 2v5 M16 2v5 M5 7h14v4a7 7 0 0 1-14 0z M12 18v4',audit:'M5 2h10l4 4v16H5z M14 2v5h5 M8 11h8 M8 15h8 M8 19h5',search:'M21 21l-5-5 M10 3a7 7 0 1 0 0 14 7 7 0 0 0 0-14',email:'M2 5h20v14H2z M2 5l10 8L22 5',sms:'M5 2h14v20H5z M10 18h4',totp:'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18 M12 7v5l3 2',hardware:'M8 3h8v18H8z M10 7h4 M12 17h.01'};
+function node(tag, className='', text) {const n=document.createElement(tag);if(className)n.className=className;if(text!==undefined)n.textContent=String(text);return n;}
+function icon(name) {const n=document.createElementNS('http://www.w3.org/2000/svg','svg');n.setAttribute('viewBox','0 0 24 24');n.setAttribute('class','icon');n.setAttribute('aria-hidden','true');const p=document.createElementNS(n.namespaceURI,'path');p.setAttribute('d',paths[name]||paths.shield);n.append(p);return n;}
+for(const el of document.querySelectorAll('[data-icon]'))el.replaceChildren(icon(el.dataset.icon));
+function badge(value, tone) {const pair=labels.states[value]||[value,'neutral'];return node('span','badge '+(tone||pair[1]),pair[0]);}
+function button(text, fn, className='plain small') {const b=node('button',className,text);b.type='button';b.addEventListener('click',()=>busy(b,fn));return b;}
+function textCell(title, sub) {const d=node('div');d.append(node('span','cell-title',title));if(sub)d.append(node('span','cell-sub',sub));return d;}
+function short(id) {return id?String(id).slice(0,12)+'…':'—';}
+function date(value) {if(!value)return '—';const d=new Date(value);return Number.isFinite(d.getTime())?new Intl.DateTimeFormat('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}).format(d):'—';}
+function fullDate(value) {if(!value)return '—';const d=new Date(value);return Number.isFinite(d.getTime())?new Intl.DateTimeFormat('zh-CN',{dateStyle:'medium',timeStyle:'short'}).format(d):'—';}
+function person(id, fallback) {const p=state.settings?.people.find(p=>p.principalId===id);const own=state.context?.identity;let frozenName;for(const r of state.requests||[]){const m=manifest(r);const member=[m.applicant,...m.approvers].find(p=>p.principalId===id);if(member){frozenName=member.personId;break;}}const name=p?.personId||(own?.principalId===id?own.personId:fallback||frozenName);if(state.context?.simulatedIdentity){return {'demo-requester':'开发申请人','demo-approver-1':'开发审批人一','demo-approver-2':'开发审批人二'}[name]||name||short(id);}return name||short(id);}
+function hasRole(role) {return !!state.context?.identity.grants.some(g=>g.role===role);}
+function notice(target,text,tone='') {target.replaceChildren();target.hidden=!text;if(text){target.className='notice '+tone;target.append(node('span','',text));}}
+function toast(text,error=false) {const n=node('div','toast'+(error?' error':''),text);$('#toasts').append(n);setTimeout(()=>n.remove(),6500);}
+async function busy(b,fn) {if(b.disabled)return;b.disabled=true;try{await fn();}catch(e){showError(e);}finally{if(b.isConnected)b.disabled=false;}}
+function showError(e) {const open=$('#work-dialog').open?$('#dialog-error'):null;if(open)notice(open,e.message,'danger');else toast(e.message,true);}
+const errorMessages={400:'输入内容不符合要求，请检查字段。',401:'身份会话已过期，请重新登录。',403:'尚未完成本人验证，或当前身份没有此操作权限。',404:'记录不存在或当前无权查看。',409:'状态已变化或操作已提交，请刷新后核对。',429:'操作过于频繁，请稍后重试。',503:'服务或插件暂不可用，本次操作未被确认，请核对状态。'};
+// 请求固定同源、短超时且不自动重发；网络结果不明时只提示核对，不能把超时当作失败后换新幂等键重做。
+async function api(path, method='GET', data, idempotency) {
+ const headers={};if(method==='POST'){headers['Content-Type']='application/json';headers['X-CSRF-Token']=state.session?.csrfToken||'';if(idempotency)headers['X-Idempotency-Key']=idempotency;}
+ let response;try{response=await fetch(path,{method,headers,credentials:'same-origin',cache:'no-store',redirect:'error',signal:AbortSignal.timeout(12000),body:data===undefined?undefined:JSON.stringify(data)});}catch{throw new Error(method==='POST'?'网络异常，操作结果尚未确认。请刷新申请列表核对后再处理。':'连接失败，请稍后刷新。');}
+ if(!response.ok){const e=new Error(errorMessages[response.status]||'请求未完成，请稍后核对。');e.status=response.status;e.requestId=response.headers.get('X-Request-ID');if(response.status===401)clearIdentity();throw e;}
+ if(response.status===204)return null;return response.json();
 }
-function option(parent, value, label) {
-  const node = document.createElement('option');
-  node.value = value;
-  node.textContent = label;
-  parent.append(node);
-}
-function action(row, label, callback) {
-  const button = document.createElement('button');
-  button.type = 'button';
-  button.textContent = label;
-  button.addEventListener('click', async () => {
-    button.disabled = true;
-    try { result.textContent = JSON.stringify(await callback(), null, 2); await refresh(); }
-    catch (error) { result.textContent = error.message; }
-    finally { button.disabled = false; }
-  });
-  row.append(button);
-}
+// 身份失效时同时清除异步区域与回调，避免旧响应恢复上一身份的数据。
+function clearIdentity() {state.epoch++;state.keyEpoch++;state.recoveryEpoch++;state.auditEpoch++;state.exportEpoch++;state.dialogEpoch++;state.mfaEpoch++;afterMFA=null;for(const id of ['audit-table','export-table','recovery-table','dialog-body','dialog-actions','mfa-progress'])$('#'+id).replaceChildren();$('#audit-footer').textContent='';Object.assign(state,{session:null,context:null,settings:null,config:null,clients:null,requests:null,plugins:null,keyRows:[],mfa:null});state.verified.clear();$('#mfa-factors').replaceChildren();if($('#mfa-dialog').open)$('#mfa-dialog').close();if($('#work-dialog').open)$('#work-dialog').close();renderAll();}
+async function optional(key,path,epoch) {try{const data=await api(path);if(epoch!==state.epoch)return null;delete state.errors[key];return data;}catch(e){if(e.status===401)throw e;if(epoch!==state.epoch)return null;state.errors[key]=e.status===403?'当前身份无权查看此范围。':e.message;return null;}}
 async function refresh() {
-  session = await call('/auth/session');
-  document.getElementById('identity').textContent = `身份：${session.principalId}；全域配置读取权限：${session.managementAuthorized ? '已授权' : '未授权'}；会话到期：${session.expiresAt}`;
-  // 独立审计员和局部授权无需全域 Profile；仅容忍明确的权限拒绝，其余故障继续提示。
-  try {config = await call('/api/config');}
-  catch(error) {if(error.status!==403) throw error;config={profiles:[],rootId:''};}
-  clients = await call('/api/clients');
-  await refreshProviders();
-  const records = await call('/api/requests');
-  const profiles = document.getElementById('profiles');
-  profiles.replaceChildren();
-  for (const profile of config.profiles) option(profiles, profile.id, `${profile.clientType} / ${profile.method}`);
-  const selector = document.getElementById('clients');
-  const selectedClient = selector.value;
-  selector.replaceChildren();
-  for (const client of clients) option(selector, client.id, `${client.id} / ${client.type} / ${client.state} / rev ${client.revision}`);
-  if (clients.some(client => client.id === selectedClient)) selector.value = selectedClient;
-  document.getElementById('client-state').textContent = JSON.stringify(clients, null, 2);
-  const queue = document.getElementById('requests');
-  queue.replaceChildren();
-  for (const record of records) {
-    const row = document.createElement('section');
-    const pre = document.createElement('pre');
-    pre.textContent = JSON.stringify(record, null, 2);
-    row.append(pre);
-    if (record.progress) {
-      const progress = document.createElement('p');
-      progress.textContent = `人员流转：${record.progress.completed}/${record.progress.m}，候选人数 ${record.progress.n}；当前人员：${record.progress.currentPrincipalId || '已结束'}`;
-      row.append(progress);
-    }
-    if (!record.executed && record.decision === 'pending' && (!record.progress || record.progress.currentPrincipalId === session.principalId)) {
-      action(row, '验证本次申请', async () => {document.getElementById('mfa-purpose').value=record.id;return startMFA(record.id);});
-      action(row, '批准此摘要', () => call(`/api/requests/${encodeURIComponent(record.id)}/votes`, 'POST', {digest: record.digest, accept: true}));
-      if(record.progress) action(row, '本人放弃并转交（不计赞成）',()=>call(`/api/requests/${encodeURIComponent(record.id)}/skip`,'POST',{digest:record.digest,reason:'本人明确放弃本次审批'}));
-      action(row, '拒绝此摘要', () => call(`/api/requests/${encodeURIComponent(record.id)}/votes`, 'POST', {digest: record.digest, accept: false}));
-    }
-    if (!record.executed && record.decision === 'approved') action(row, '原申请人执行', () => call(`/api/requests/${encodeURIComponent(record.id)}/execute`, 'POST', {digest: record.digest}));
-    queue.append(row);
-  }
+ const epoch=++state.epoch;$('#refresh').disabled=true;notice($('#page-error'),'');
+ try{
+  const session=await api('/auth/session');if(epoch!==state.epoch)return;state.session=session;
+  const context=await api('/api/console/identity');if(epoch!==state.epoch)return;state.context=context;
+  if(context.identity.mfaRequired&&!context.identity.mfaVerified){for(const id of ['audit-table','export-table','recovery-table'])$('#'+id).replaceChildren();$('#audit-footer').textContent='';Object.assign(state,{settings:null,config:null,clients:null,requests:null,plugins:null});state.errors={};renderAll();return;}
+  const keys=['config','clients','requests','plugins','settings'];const paths=['/api/config','/api/clients','/api/requests','/api/providers','/api/console/settings'];
+  const values=await Promise.all(paths.map((p,i)=>optional(keys[i],p,epoch)));if(epoch!==state.epoch)return;
+  keys.forEach((key,i)=>state[key]=values[i]);renderAll();
+ }catch(e){if(e.status!==401)notice($('#page-error'),e.message,'danger');renderAll();}finally{$('#refresh').disabled=false;}
 }
-async function submit(callback) {
-  try { result.textContent = JSON.stringify(await callback(), null, 2); await refresh(); }
-  catch (error) { result.textContent = error.message; }
+function empty(target,title,description,action,compact=false) {const d=node('div','empty'+(compact?' compact':''));const mark=node('div','empty-icon');mark.append(icon('approval'));d.append(mark,node('h3','',title));if(description)d.append(node('p','',description));if(action)d.append(action);target.replaceChildren(d);}
+function unavailable(target,key,emptyTitle='暂无记录') {const needs=state.context?.identity.mfaRequired&&!state.context.identity.mfaVerified;empty(target,!state.session?'登录后查看':needs?'请先完成本人验证':state.errors[key]?'当前不可查看':emptyTitle,!state.session?'通过 SSO 验证身份后，查看你的资源与待办。':needs?'使用已绑定的验证方式完成本人验证。':state.errors[key]||'新记录会在这里显示。',!state.session?null:needs?button('完成本人验证',()=>startMFA('management'),'small'):null);}
+function table(target,columns,rows) {const wrap=node('div','table-wrap');const t=node('table');const head=node('thead');const tr=node('tr');for(const c of columns)tr.append(node('th','',c));head.append(tr);t.append(head);const body=node('tbody');for(const row of rows){const r=node('tr');for(const content of row){const cell=node('td');cell.append(content instanceof Node?content:document.createTextNode(String(content??'—')));r.append(cell);}body.append(r);}t.append(body);wrap.append(t);target.replaceChildren(wrap);}
+function requestState(r) {if(r.executed)return 'executed';try{if(['pending','approved'].includes(r.decision)&&new Date(manifest(r).expires)<=new Date())return 'expired';}catch{}return r.decision;}
+function manifest(r) {return typeof r.manifest==='string'?JSON.parse(r.manifest):r.manifest;}
+function isCurrent(r) {const m=manifest(r);return requestState(r)==='pending'&&(r.progress?r.progress.currentPrincipalId===state.session?.principalId:m.approvers.some(a=>a.principalId===state.session?.principalId));}
+function canExecute(r) {return requestState(r)==='approved'&&manifest(r).applicant.principalId===state.session?.principalId;}
+function requestRows(records,compact=false) {return records.map(r=>{const m=manifest(r),op=m.operation;const action=node('div','table-actions');action.append(button(isCurrent(r)?'查看并处理':canExecute(r)?'确认执行':'查看详情',()=>openRequest(r.id),'text-button'));const progress=r.progress?`${r.progress.completed} / ${r.progress.m} 人已同意`:`${m.threshold} 人审批`;return [textCell(labels.operations[op.kind]||'变更申请',(state.clients||[]).find(c=>c.id===op.clientId)?.name||op.clientId),badge(requestState(r)),textCell(person(m.applicant.principalId,m.applicant.personId),date(m.created)),compact?progress:textCell(progress,r.progress?.currentPrincipalId?'当前：'+person(r.progress.currentPrincipalId):requestState(r)==='expired'?'申请已到期':'按当前策略处理'),action];});}
+function renderAll() {renderIdentity();renderOverview();renderClients();renderApprovals();renderVerification();renderPolicies();renderPeople();renderPlugins();updateKeySelector();renderKeyRows();renderPage();}
+function renderIdentity() {
+ const own=state.context?.identity;$('#login').textContent=state.session?'重新认证':'SSO 登录';$('#logout').hidden=!state.session;$('#user-name').hidden=!own;$('#user-name').textContent=own?person(own.principalId):'';
+ $('#environment').textContent=state.context?(state.context.simulatedIdentity?'开发环境 · 模拟身份':'开发环境 · 外部 SSO'):'尚未登录';
+ const banner=$('#session-banner');banner.replaceChildren();banner.hidden=false;banner.className='notice';
+ if(!state.session){banner.append(node('span','','请先通过 SSO 登录，进入你的工作空间。'));const a=node('a','button small','SSO 登录');a.href='/auth/login';banner.append(a);}
+ else if(!own){banner.append(node('span','','身份已验证，但尚未取得本地授权信息。请联系授权管理员核对登记。'));}
+ else if(own.mfaRequired&&!own.mfaVerified){banner.append(node('span','','本人二次验证尚未完成。管理数据和关键操作将在验证后开放。'),button('完成本人验证',()=>startMFA('management'),'small'));}
+ else {banner.hidden=true;}
+ $('#new-root').disabled=!hasRole('requester')||!own?.mfaVerified;$('#export-audit').disabled=!hasRole('auditor')||!own?.mfaVerified;const todo=(state.requests||[]).filter(isCurrent).length;$('#todo-count').hidden=todo===0;$('#todo-count').textContent=todo;
+ const actions=$('#page-actions');actions.replaceChildren();if(['overview','clients'].includes(state.page)){const b=button('＋ 登记客户端',openCreate,'');b.disabled=!hasRole('requester')||!own?.mfaVerified||!state.config?.profiles?.length;actions.append(b);}if(state.page==='approvals')actions.append(button('刷新待办',refresh,'plain small'));
 }
-document.getElementById('refresh').addEventListener('click', async () => {try {await refresh();} catch (error) {result.textContent = error.message;}});
-document.getElementById('logout').addEventListener('click', async () => {
-  try {
-    await call('/auth/logout', 'POST');
-    session = undefined; config = undefined; clients = []; mfaState=undefined;document.getElementById('mfa-factors').replaceChildren();document.getElementById('mfa-state').textContent='';
-    for (const id of ['requests', 'clients', 'profiles', 'providers']) document.getElementById(id).replaceChildren();
-    document.getElementById('client-state').textContent = '';
-    document.getElementById('key-state').textContent = '';
-    document.getElementById('identity').textContent = '已退出';
-    result.textContent = '已退出';
-  } catch (error) {result.textContent = error.message;}
-});
-document.getElementById('create').addEventListener('submit', event => {
-  event.preventDefault();
-  const data = new FormData(event.currentTarget);
-  submit(() => call('/api/requests', 'POST', {kind: 'client_create', clientId: data.get('clientId'), expectedRevision: '0', name: data.get('name'), profileId: data.get('profileId'), profileVersion: '1'}));
-});
-document.getElementById('key-operation').addEventListener('submit', event => {
-  event.preventDefault();
-  const data = new FormData(event.currentTarget);
-  submit(async () => {
-    const client = clients.find(item => item.id === data.get('clientId'));
-    if (!client) throw new Error('请先创建客户端并刷新状态');
-    const operation = {kind: data.get('kind'), clientId: client.id, expectedRevision: client.revision, name: '', profileId: '', profileVersion: '0', keyVersion: data.get('keyVersion')};
-    if (operation.kind.startsWith('recovery_')) for (const field of ['recoveryId','incidentId','evidenceHash']) operation[field]=data.get(field);
-    if (operation.kind === 'key_issue' || operation.kind === 'recovery_issue') {
-      if (data.get('rotationOf')) {operation.rotationOf = data.get('rotationOf');operation.rotationReason=data.get('rotationReason');}
-      const recipient = JSON.parse(data.get('recipient'));
-      for (const key of ['recipientPublicKey', 'recipientFingerprint', 'recipientSigningKey', 'recipientSigningFingerprint']) {
-        if (typeof recipient[key] !== 'string') throw new Error(`缺少接收方字段 ${key}`);
-        operation[key] = recipient[key];
-      }
-      operation.rootId = config.rootId;
-      operation.notAfter = new Date(Date.now() + 3600000).toISOString();
-    }
-    if (data.get('retireAt')) operation.retireAt = data.get('retireAt');
-    return call('/api/requests', 'POST', operation);
-  });
-});
-submit(refresh);
-
-async function keyState() {
-  const data = new FormData(document.getElementById('key-operation'));
-  if (!data.get('clientId')) throw new Error('请先选择客户端');
-  const state = await call(`/api/clients/${encodeURIComponent(data.get('clientId'))}/keys/${encodeURIComponent(data.get('keyVersion'))}`);
-  document.getElementById('key-state').textContent = JSON.stringify(state, null, 2);
+function renderOverview() {
+ $('#metric-clients').textContent=state.clients?.length??'—';$('#metric-enabled').textContent=state.clients?.filter(c=>c.state==='enabled').length??'—';$('#metric-todo').textContent=state.requests?.filter(isCurrent).length??'—';$('#metric-execute').textContent=state.requests?.filter(canExecute).length??'—';
+ if(!state.requests){unavailable($('#overview-todos'),'requests');unavailable($('#overview-recent'),'requests');}else{const mine=state.requests.filter(isCurrent);if(mine.length)table($('#overview-todos'),['申请事项','状态','发起人 / 时间','进度','操作'],requestRows(mine.slice(0,4),true));else empty($('#overview-todos'),'暂无待你处理的申请','轮到你验证或确认时，待办会显示在这里。',null,true);if(state.requests.length)table($('#overview-recent'),['申请事项','状态','发起人 / 时间','进度','操作'],requestRows(state.requests.slice(0,4),true));else empty($('#overview-recent'),'暂无变更申请','登记客户端或申请密钥后，可以在这里跟踪进度。',null,true);}
+ renderPolicySummary($('#overview-policy'));
+ const own=state.context?.identity,target=$('#overview-verification');target.replaceChildren();if(!own){unavailable(target,'identity');return;}
+ const line=node('div','identity-state');line.append(node('div','identity-avatar',person(own.principalId).slice(-1)),textCell(person(own.principalId),own.grants.map(g=>labels.roles[g.role]||g.role).join(' · ')));target.append(line,badge(own.mfaVerified?'本人验证已完成':'等待本人验证',own.mfaVerified?'success':'warning'));
+ for(const method of Object.keys(labels.methods)){const n=node('div','method-line');n.append(node('span','',labels.methods[method]),node('span','',(own.factors||[]).some(f=>f.method===method)?'已登记绑定':state.context.available[method]?'待受控绑定':'插件未接入'));target.append(n);}
 }
-document.getElementById('key-status').addEventListener('click', async () => {
-  try {await keyState();} catch (error) {document.getElementById('key-state').textContent = error.message;}
-});
-
-document.getElementById('lifecycle-status').addEventListener('click', () => submit(() => call(`/api/clients/${encodeURIComponent(document.getElementById('clients').value)}/lifecycle`)));
-document.getElementById('lifecycle-maintain').addEventListener('click', () => submit(() => call('/api/lifecycle/maintain', 'POST', {})));
-
-document.getElementById('revoke').addEventListener('submit',event=>{event.preventDefault();const d=new FormData(event.currentTarget);submit(()=>{const key=new FormData(document.getElementById('key-operation'));const root=d.get('scope')==='root';return call('/api/revocations','POST',{incidentId:d.get('incidentId'),reason:d.get('reason'),clientId:root?'':key.get('clientId'),keyVersion:root?'0':key.get('keyVersion'),rootId:root?config.rootId:''});});});
-
-document.getElementById('recovery-status').addEventListener('click',()=>submit(()=>call(`/api/clients/${encodeURIComponent(document.getElementById('clients').value)}/recoveries`)));
-document.getElementById('abort-recovery').addEventListener('submit',e=>{e.preventDefault();submit(()=>call(`/api/recoveries/${encodeURIComponent(new FormData(e.target).get('id'))}/abort`,'POST',{}));});
-document.getElementById('provision-root').addEventListener('submit',e=>{e.preventDefault();submit(()=>call('/api/requests','POST',{kind:'root_provision',clientId:'root-management',expectedRevision:'0',name:'',profileId:'',profileVersion:'0',rootId:new FormData(e.target).get('rootId')}));});
-
-document.getElementById('audit').addEventListener('submit',e=>{e.preventDefault();const d=new FormData(e.target);const exportMode=e.submitter.value==='export';submit(()=>call(exportMode?'/api/audit/exports':'/api/audit/query','POST',{clientId:d.get('clientId'),action:d.get('action'),result:d.get('result'),requestId:d.get('requestId'),targetId:d.get('targetId'),after:exportMode?'0':d.get('after'),limit:exportMode?5000:100,from:new Date(Date.now()-86400000).toISOString(),until:new Date().toISOString()}));});
-document.getElementById('audit-exports').addEventListener('click',()=>submit(()=>call('/api/audit/exports')));
-document.getElementById('auth-failures').addEventListener('click',()=>submit(()=>call('/api/audit/auth-failures')));
-document.getElementById('audit-download').addEventListener('submit',async e=>{e.preventDefault();try{const id=new FormData(e.target).get('id');const response=await fetch(`/api/audit/exports/${encodeURIComponent(id)}`,{credentials:'same-origin'});if(!response.ok)throw new Error(`下载拒绝 ${response.status}`);const url=URL.createObjectURL(await response.blob());const link=document.createElement('a');link.href=url;link.download='keygate-audit.jsonl';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}catch(error){result.textContent=error.message;}});
-
-async function refreshProviders() {
-  const container = document.getElementById('providers');
-  container.replaceChildren();
-  let plugins;
-  try {plugins = await call('/api/providers');}
-  catch (error) {if (error.status !== 403) throw error;container.textContent='当前身份无全域插件查看权限';return;}
-  for (const item of plugins) {
-    const row=document.createElement('section');
-    const pre=document.createElement('pre');
-    pre.textContent=JSON.stringify(item,null,2);row.append(pre);
-    const policy=item.policy;
-    if (item.installedDigest && item.executor !== 'reserved') {
-      action(row,'申请启用当前安装配置（多人审批）',()=>call('/api/requests','POST',{kind:'provider_enable',clientId:'provider-management',expectedRevision:String(policy.Revision),providerId:policy.ID,providerDigest:item.installedDigest}));
-      if(policy.Enabled && policy.Digest===item.installedDigest) action(row,'健康检查 / 公开向量自检',()=>call(`/api/providers/${encodeURIComponent(policy.ID)}/check`,'POST',{}));
-    }
-    if(policy.Enabled) action(row,'应急停用插件',()=>call(`/api/providers/${encodeURIComponent(policy.ID)}/disable`,'POST',{}));
-    if(item.executor==='reserved') {const note=document.createElement('p');note.textContent='接口预留，尚无可执行实现';row.append(note);}
-    container.append(row);
-  }
+function renderPolicySummary(target) {const p=state.settings;if(!p){unavailable(target,'settings','尚未读取策略');return;}target.replaceChildren();const hero=node('div','policy-hero');const count=node('div','quorum-number',p.m);count.append(node('span','','of'),document.createTextNode(String(p.approvers.length)));hero.append(count,node('p','',p.sequential?'不同自然人依次确认，达到门槛后批准。':'不同自然人独立审批，达到门槛后批准。'));target.append(hero,steps(p.approvers,0,p.sequential?p.approvers[0]:null));target.append(node('div','overview-policy-meta',`策略版本 v${p.version} · 不重复计人，不自动降低门槛`));}
+function steps(ids,completed,current,members) {const d=node('div','steps');ids.forEach((id,i)=>{const done=i<completed;const n=node('div','person-step'+(done?' done':'')+(id===current?' current':''));n.append(node('div','step-avatar',done?'✓':i+1),node('strong','',person(id,members?.find(p=>p.principalId===id)?.personId)),node('small','',done?'已处理':id===current?'当前处理人':'等待流转'));d.append(n);});return d;}
+function renderClients() {
+ const target=$('#client-table');if(!state.clients){unavailable(target,'clients');$('#client-pagination').replaceChildren();return;}
+ const query=$('#client-search').value.trim().toLowerCase(),type=$('#client-type').value,status=$('#client-status').value;
+ const rows=state.clients.filter(c=>(!type||c.type===type)&&(!status||c.state===status)&&(!query||(c.name+' '+c.id).toLowerCase().includes(query)));const size=10;state.clientPage=Math.max(0,Math.min(state.clientPage,Math.max(0,Math.ceil(rows.length/size)-1)));
+ if(!rows.length)empty(target,query||type||status?'没有匹配的客户端':'尚未登记客户端',query||type||status?'尝试调整搜索或筛选条件。':'登记接入应用后，通过审批即可启用。');else table(target,['客户端','接入类型','状态','配置版本','操作'],rows.slice(state.clientPage*size,(state.clientPage+1)*size).map(c=>{const a=node('div','table-actions');a.append(button('查看',()=>openClient(c),'text-button'),button('密钥',()=>{location.hash='keys';selectClient(c.id);},'text-button'));return [textCell(c.name,c.id),labels.types[c.type]||c.type,badge(c.state),'v'+c.revision,a];}));
+ const pager=$('#client-pagination');pager.replaceChildren(node('span','',`当前授权范围 ${rows.length} 个客户端 · 最多读取100条`));const prev=button('上一页',()=>{state.clientPage--;renderClients();},'plain small');prev.disabled=state.clientPage===0;const next=button('下一页',()=>{state.clientPage++;renderClients();},'plain small');next.disabled=(state.clientPage+1)*size>=rows.length;pager.append(prev,node('span','',`${state.clientPage+1} / ${Math.max(1,Math.ceil(rows.length/size))}`),next);
 }
-
-let mfaState;
-async function startMFA(purpose) {
- const response=await call('/api/mfa/challenges','POST',{purpose});
- renderMFA(response);return {challengeId:response.state.id,completed:response.state.completed};
+function renderApprovals() {
+ const target=$('#approval-table');if(!state.requests){unavailable(target,'requests');$('#approval-footer').textContent='仅展示当前有权查看的申请。';return;}
+ let records=state.requests;const filter=state.approvalFilter;for(const b of $('#approval-tabs').querySelectorAll('button'))b.classList.toggle('active',b.dataset.filter===filter);
+ if(filter==='mine')records=records.filter(isCurrent);if(filter==='applicant')records=records.filter(r=>manifest(r).applicant.principalId===state.session?.principalId);if(filter==='execute')records=records.filter(canExecute);const status=$('#approval-status').value;if(status)records=records.filter(r=>requestState(r)===status);
+ if(records.length)table(target,['申请事项','状态','发起人 / 时间','人员进度','操作'],requestRows(records));else empty(target,'暂无符合条件的申请','新的审批待办和申请进度会显示在这里。');$('#approval-footer').textContent=`共 ${records.length} 条 · 当前有权查看的最近100条申请，未经确认不会自动执行`;
 }
-function renderMFA(response) {
- mfaState=response.state;
- document.getElementById('mfa-state').textContent=JSON.stringify({purpose:mfaState.purpose,completed:mfaState.completed,verified:mfaState.verified,policy:mfaState.policy,expiresAt:mfaState.expiresAt},null,2);
- const container=document.getElementById('mfa-factors');container.replaceChildren();
- for (const factor of mfaState.factors) {
-  const row=document.createElement('section');const label=document.createElement('p');label.textContent=`${factor.label} (${factor.method})`;
-  row.append(label);
-  if (!response.available[factor.method]) {label.textContent+='：插件未配置，不能计入验证';container.append(row);continue;}
-  if (mfaState.completed || mfaState.verified.includes(factor.id)) {label.textContent+='：已完成';container.append(row);continue;}
-  const input=document.createElement('input');input.type='password';input.autocomplete='one-time-code';input.maxLength=8;input.setAttribute('aria-label',factor.label+' 验证码');
-  if (factor.method!=='hardware') row.append(input);
-  const base=`/api/mfa/challenges/${encodeURIComponent(mfaState.id)}/factors/${encodeURIComponent(factor.id)}`;
-  const status=document.createElement('span');row.append(status);
-  const begin=document.createElement('button');begin.type='button';begin.textContent=factor.method==='totp'?'准备动态码验证':factor.method==='hardware'?'开始硬件验证':'发送验证码';
-  let hardwareOptions;
-  begin.addEventListener('click',async()=>{
-   begin.disabled=true;
-   try {const attempt=await call(base,'POST',{});hardwareOptions=attempt.options;status.textContent=' 已准备验证';verify.disabled=false;}
-   catch(error){status.textContent=error.message;}
-  });row.append(begin);
-  const verify=document.createElement('button');verify.type='button';verify.textContent='核验此方式';verify.disabled=true;
-  verify.addEventListener('click',async()=>{
-   verify.disabled=true;
-   try {
-    let body={code:input.value};input.value='';
-    if(factor.method==='hardware') {
-     // 页面只执行明确的WebAuthn客户端契约；不把任意插件脚本加载进同源管理页面。
-     if(!hardwareOptions?.publicKey) throw new Error('当前硬件插件未提供 WebAuthn publicKey 客户端契约');
-     const decode=value=>Uint8Array.from(atob(value.replace(/-/g,'+').replace(/_/g,'/')),c=>c.charCodeAt(0));
-     const encode=value=>btoa(String.fromCharCode(...new Uint8Array(value))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
-     const options=structuredClone(hardwareOptions.publicKey);options.userVerification='required';options.challenge=decode(options.challenge);
-     if(options.allowCredentials) for(const credential of options.allowCredentials) credential.id=decode(credential.id);
-     const assertion=await navigator.credentials.get({publicKey:options});
-     body={proof:{id:assertion.id,rawId:encode(assertion.rawId),type:assertion.type,response:{clientDataJSON:encode(assertion.response.clientDataJSON),authenticatorData:encode(assertion.response.authenticatorData),signature:encode(assertion.response.signature),userHandle:assertion.response.userHandle?encode(assertion.response.userHandle):null}}};
-    }
-    const response=await call(base+'/verify','POST',body);renderMFA(response);
-    if(response.state.completed){document.getElementById('result').textContent='本人验证已完成，请返回申请行确认；确认后才转交下一人。';try{await refresh();}catch{}}
-   }catch(error){status.textContent=error.message;verify.disabled=false;}
-  });row.append(verify);container.append(row);
+function renderVerification() {
+ const target=$('#factor-cards'),own=state.context?.identity;target.replaceChildren();$('#verify-management').disabled=!own;
+ for(const method of Object.keys(labels.methods)){const bindings=own?.factors.filter(f=>f.method===method)||[],available=!!state.context?.available[method];const card=node('article','factor-card');const symbol=node('div','factor-symbol');symbol.append(icon(method));card.append(symbol,node('h3','',labels.methods[method]),badge(!own?'登录后查看':!available?'插件未接入':bindings.length?'已登记绑定':'尚未绑定',available&&bindings.length?'success':'neutral'),node('p','',method==='totp'?'由 KeyGate 本机核验动态码。':method==='hardware'?'通过可信硬件插件核验持钥证明。':'通过可信插件投递，本机核验验证码。'));
+  const list=node('div','factor-bindings',bindings.length?bindings.map(f=>f.label).join('、'):'绑定与更换由受控流程核验。');card.append(list);target.append(card);
+ }
+ const methods=$('#mfa-plugin-table');table(methods,['验证方式','接入状态','本人绑定'],Object.keys(labels.methods).map(m=>[labels.methods[m],badge(!state.context?'尚未读取':state.context.available[m]?'已接入':'未接入',state.context?.available[m]?'success':'neutral'),own?`${own.factors.filter(f=>f.method===m).length} 项`:'—']));
+}
+function renderPeople() {if(!state.settings){unavailable($('#people-table'),'settings');return;}table($('#people-table'),['人员','当前状态','角色','授权范围'],state.settings.people.map(p=>[textCell(person(p.principalId,p.personId),short(p.principalId)),badge(p.enabled?'enabled':'disabled'),p.grants.map(g=>labels.roles[g.role]||g.role).join('、')||'无管理角色',[...new Set(p.grants.map(g=>g.clientId||'当前安全域全部客户端'))].join('、')||'—']));}
+function renderPolicies() {
+ const target=$('#policy-view');if(!state.settings){unavailable(target,'settings');return;}const panel=node('div','panel');const head=node('div','panel-heading');head.append(node('h2','','人员审批策略'),button('预览策略变更',openPolicyDraft,'plain small'));panel.append(head);const content=node('div','panel-body');renderPolicySummary(content);content.append(detailList([['计数单位','不同自然人，同一人的别名不重复占票'],['确认方式',state.settings.sequential?'当前人员完成本人验证并确认后，才转交下一人':'多人独立确认'],['放弃与拒绝','本人放弃不计赞成；剩余人员不足门槛时拒绝'],['策略变更','受控离线维护，变更后原有申请不能沿用旧票']]));panel.append(content);target.replaceChildren(panel);
+ const own=node('div','panel');own.append(node('div','panel-heading','本人验证组合'));const body=node('div','panel-body');if(state.context?.identity.policy){const p=state.context.identity.policy;body.append(node('p','section-description',`每次须通过至少 ${p.m} 种方式；标记必需的方式必须完成。`));table(body,['方式','完成要求','必需'],p.rules.map(r=>[labels.methods[r.method]||r.method,`${r.n} 个绑定项中至少 ${r.m} 项`,r.required?'是':'按组合门槛']));}else body.append(node('p','section-description','当前未配置本人原生验证组合。'));own.append(body);target.append(own);
+}
+function renderPlugins() {
+ const target=$('#plugin-cards');target.replaceChildren();if(!state.plugins){unavailable(target,'plugins');return;}
+ for(const item of state.plugins){const p=item.policy,id=p.ID;const card=node('article','plugin-card'),top=node('div');top.append(icon('plug'),node('h3','',{'internal-software':'内部软件插件','third-party-demo':'第三方认证插件',hsm:'硬件密钥托管',kms:'外部 KMS'}[id]||id));card.append(top,badge(item.executor==='reserved'?'接口预留':p.Enabled?'已启用':'未启用',p.Enabled&&item.executor!=='reserved'?'success':'neutral'));card.append(node('p','',item.executor==='reserved'?'尚无可执行实现，当前不能启用。':item.executor==='internal_software'?'提供当前开发软件模式的密钥认证能力。':'使用固定 HTTPS/mTLS 连接，由获批配置决定信任范围。'));
+  const detail=node('dl');for(const [a,b] of [['配置版本','v'+p.Revision],['本机配置',item.installedDigest?'已安装':'未安装'],['审批配置',p.Enabled&&p.Digest===item.installedDigest?'与安装配置一致':p.Enabled?'存在差异':'待启用']])detail.append(node('dt','',a),node('dd','',b));card.append(detail);const actions=node('div','plugin-actions');
+  if(item.installedDigest&&item.executor!=='reserved'){actions.append(button('申请启用',()=>confirmOperation('启用插件配置','提交后按当前策略多人审批；执行后才会切换配置。',()=>submitOperation({kind:'provider_enable',clientId:'provider-management',expectedRevision:String(p.Revision),providerId:id,providerDigest:item.installedDigest})),'text-button'));if(p.Enabled&&p.Digest===item.installedDigest)actions.append(button('健康检查',async()=>{const check=await api(`/api/providers/${encodeURIComponent(id)}/check`,'POST',{});toast(check?'插件检查完成，请核对当前状态。':'插件检查已提交。');await refresh();},'text-button'));}
+  if(p.Enabled)actions.append(button('应急停用',()=>confirmOperation('应急停用插件','停用将立即拒绝依赖此插件的认证，不会自动启用替代插件。',async()=>{await api(`/api/providers/${encodeURIComponent(id)}/disable`,'POST',{});closeWork();toast('插件已停用。');await refresh();},true),'text-button'));card.append(actions);target.append(card);
  }
 }
-document.getElementById('mfa-start').addEventListener('click',async()=>{
- try{await startMFA(document.getElementById('mfa-purpose').value);}catch(error){document.getElementById('mfa-state').textContent=error.message;}
-});
+function detailList(pairs) {const d=node('dl','detail-list');for(const [k,v] of pairs){d.append(node('dt','',k));const dd=node('dd');dd.append(v instanceof Node?v:document.createTextNode(String(v??'—')));d.append(dd);}return d;}
+function openWork(title,kicker='',drawer=false) {state.dialogEpoch++;const d=$('#work-dialog');if(d.open)d.close();d.classList.toggle('drawer',drawer);$('#dialog-title').textContent=title;$('#dialog-kicker').textContent=kicker;$('#dialog-body').replaceChildren();$('#dialog-actions').replaceChildren();notice($('#dialog-error'),'');d.showModal();return $('#dialog-body');}
+function closeWork() {state.dialogEpoch++;if($('#work-dialog').open)$('#work-dialog').close();}
+function cancelAction() {return button('取消',closeWork,'plain');}
+function formAction(form,label,handler) {const b=node('button','',label);b.type='submit';b.setAttribute('form',form.id);$('#dialog-actions').append(cancelAction(),b);form.addEventListener('submit',async e=>{e.preventDefault();if(!form.reportValidity()||b.disabled)return;await busy(b,()=>handler(new FormData(form)));});}
+function operationSubmitter() {let last='',key='';return async op=>{const serialized=JSON.stringify(op);if(serialized!==last){last=serialized;key=crypto.randomUUID();}const r=await api('/api/requests','POST',op,key);closeWork();toast('申请已提交，等待审批。');await refresh();location.hash='approvals';state.approvalFilter='applicant';renderApprovals();return r;};}
+async function submitOperation(op) {return operationSubmitter()(op);}
+function openCreate() {const body=openWork('登记客户端','客户端管理');const form=$('#client-form-template').content.firstElementChild.cloneNode(true);body.append(form);const select=form.querySelector('select');for(const p of state.config?.profiles||[]){const o=node('option','',`${labels.types[p.clientType]||p.clientType} · ${p.method==='federated_session'?'联合身份会话':'共享密钥认证'}`);o.value=p.id;select.append(o);}form.elements.clientId.value='client-'+crypto.randomUUID().slice(0,8);const submit=operationSubmitter();formAction(form,'提交创建申请',d=>{const p=state.config.profiles.find(p=>p.id===d.get('profileId'));return submit({kind:'client_create',clientId:d.get('clientId'),name:d.get('name'),expectedRevision:'0',profileId:p.id,profileVersion:String(p.version)});});}
+function openClient(client) {const body=openWork(client.name,'客户端详情',true);body.append(detailList([['客户端标识',client.id],['接入类型',labels.types[client.type]||client.type],['当前状态',badge(client.state)],['配置版本','v'+client.revision],['认证配置',client.profileId],['接入说明',client.type==='browser'?'已提供 H5 SDK 与同源会话执行器。':client.type==='backend'?'通过接收方工具领取密钥并完成持有证明。':'原生 SDK 尚未交付，当前仅登记策略与客户端模型。']]));$('#dialog-actions').append(button('查看密钥',()=>{closeWork();location.hash='keys';selectClient(client.id);},'plain'));if(client.state==='enabled')$('#dialog-actions').append(button('应急停用',()=>confirmOperation('应急停用客户端',`客户端“${client.name}”将立即停止认证。该操作不会自动恢复。`,async()=>{await api(`/api/clients/${encodeURIComponent(client.id)}/emergency-disable`,'POST',{});closeWork();toast('客户端已停用。');await refresh();},true),'danger-button'));}
+function updateKeySelector() {const select=$('#key-client');const previous=state.selectedClient||select.value;select.replaceChildren(node('option','','请选择客户端'));for(const c of state.clients||[]){const o=node('option','',c.name+' · '+(labels.types[c.type]||c.type));o.value=c.id;select.append(o);}select.value=(state.clients||[]).some(c=>c.id===previous)?previous:'';if(state.selectedClient!==select.value){state.keyRows=[];state.keyEpoch++;state.recoveryEpoch++;$('#recovery-table').replaceChildren();}state.selectedClient=select.value;$('#issue-key').disabled=!state.selectedClient||!hasRole('requester');}
+// 所有客户端入口共用切换逻辑，使旧密钥与恢复响应不能覆盖新对象。
+async function selectClient(id) {state.selectedClient=id;state.keyEpoch++;state.recoveryEpoch++;state.keyRows=[];$('#recovery-table').replaceChildren();updateKeySelector();renderKeyRows();await Promise.all([loadKeys(),loadRecoveries()]);}
+async function loadKeys() {
+ const id=$('#key-client').value;state.selectedClient=id;const epoch=++state.keyEpoch;state.keyRows=[];
+ if(!id){renderKeyRows();return;}empty($('#key-table'),'正在读取密钥版本','请稍候。');
+ try{const rows=await api(`/api/clients/${encodeURIComponent(id)}/lifecycle`);if(epoch!==state.keyEpoch||id!==state.selectedClient||!state.session)return;state.keyRows=rows;renderKeyRows();}
+ catch(e){if(epoch===state.keyEpoch&&state.session)empty($('#key-table'),'无法读取密钥版本',e.message);}
+}
+function renderKeyRows() {const target=$('#key-table');if(!state.selectedClient){empty(target,'选择客户端查看密钥','仅展示元数据，后台不会显示或下载密钥明文。');return;}if(!state.keyRows.length){empty(target,'暂无密钥版本','浏览器 H5 使用身份会话，无需共享密钥；服务端客户端可提交密钥申请。');return;}table(target,['版本','状态','到期时间','轮换状态','操作'],state.keyRows.map(k=>{const a=node('div','table-actions');if(['staged','pending','claimed'].includes(k.State))a.append(button('申请启用',()=>openKey('key_activate',k),'text-button'));if(k.State==='active')a.append(button('申请轮换',()=>openKey('key_issue',k),'text-button'));if(['active','retiring'].includes(k.State))a.append(button('申请停用',()=>openKey('key_disable',k),'text-button'));a.append(button('撤销',()=>openRevoke(k),'text-button'));return [textCell('v'+k.Version,k.Reminder?'即将到期，请安排轮换':''),badge(k.State),date(k.NotAfter),k.RotationState||'—',a];}));}
+function openKey(kind='key_issue',key) {const body=openWork(labels.operations[kind]||'密钥操作','密钥管理');const form=$('#key-form-template').content.firstElementChild.cloneNode(true);body.append(form);const select=form.elements.clientId;for(const c of state.clients||[]){const o=node('option','',c.name+' · '+c.id);o.value=c.id;select.append(o);}select.value=state.selectedClient;form.elements.kind.value=kind;if(key){form.elements.keyVersion.value=String(key.Version);if(kind==='key_issue')form.elements.rotationOf.value=String(key.Version);}
+ let recipient=null;let issueExpiry=null;let issueHours=null;const sync=()=>{const issue=['key_issue','recovery_issue'].includes(form.elements.kind.value),recovery=form.elements.kind.value.startsWith('recovery_');for(const e of form.querySelectorAll('[data-issue]'))e.hidden=!issue;for(const e of form.querySelectorAll('[data-recovery]'))e.hidden=!recovery;form.querySelector('[data-retire]').hidden=form.elements.kind.value!=='key_activate';for(const field of ['recoveryId','incidentId','evidenceHash'])form.elements[field].required=recovery;};form.elements.kind.addEventListener('change',sync);sync();
+ form.elements.recipientFile.addEventListener('change',async()=>{recipient=null;const file=form.elements.recipientFile.files[0];if(!file)return;try{if(file.size>16384)throw new Error('公开配置文件不能超过16 KB。');const value=JSON.parse(await file.text());const fields=['recipientPublicKey','recipientFingerprint','recipientSigningKey','recipientSigningFingerprint'];if(!value||typeof value!=='object'||fields.some(f=>typeof value[f]!=='string')||Object.keys(value).some(f=>/private|secret|password|token/i.test(f)))throw new Error('请选择接收方工具生成的公开配置，不得包含私钥或凭据。');recipient=Object.fromEntries(fields.map(f=>[f,value[f]]));const summary=form.querySelector('#recipient-summary');summary.hidden=false;summary.textContent='公开配置已识别 · 接收方指纹 '+value.recipientFingerprint;}catch(e){notice($('#dialog-error'),e.message,'danger');form.elements.recipientFile.value='';}});
+ const submit=operationSubmitter();formAction(form,'提交审批申请',async d=>{const client=(state.clients||[]).find(c=>c.id===d.get('clientId'));if(!client)throw new Error('请选择当前有权操作的客户端。');const kind=d.get('kind');const op={kind,clientId:client.id,expectedRevision:client.revision,name:'',profileId:'',profileVersion:'0',keyVersion:d.get('keyVersion')};if(kind==='key_issue'||kind==='recovery_issue'){if(!recipient)throw new Error('请先选择接收方公开配置文件。');if(!state.config?.rootId)throw new Error('当前没有可用于签发的基础根。');if(issueHours!==d.get('validHours')){issueHours=d.get('validHours');issueExpiry=new Date(Date.now()+Number(issueHours)*3600000).toISOString();}Object.assign(op,recipient,{rootId:state.config.rootId,notAfter:issueExpiry});if(d.get('rotationOf'))Object.assign(op,{rotationOf:d.get('rotationOf'),rotationReason:'manual'});}if(kind.startsWith('recovery_'))for(const f of ['recoveryId','incidentId','evidenceHash'])op[f]=d.get(f);if(kind==='key_activate'&&d.get('retireAt'))op.retireAt=new Date(d.get('retireAt')).toISOString();await submit(op);});}
+function confirmOperation(title,description,fn,danger=false) {const body=openWork(title,danger?'风险操作确认':'确认操作');body.append(node('p','section-description',description));const label=node('label','check-row');const checkbox=node('input');checkbox.type='checkbox';label.append(checkbox,node('span','','我已核对操作对象和影响范围。'));body.append(label);const b=button(danger?'确认执行':'确认提交',fn,danger?'danger-button':'');b.disabled=true;checkbox.addEventListener('change',()=>b.disabled=!checkbox.checked);$('#dialog-actions').append(cancelAction(),b);}
+async function openRequest(id) {const epoch=state.epoch,ticket=++state.dialogEpoch;const latest=await api(`/api/requests/${encodeURIComponent(id)}`);if(epoch!==state.epoch||ticket!==state.dialogEpoch||!state.session)return;const r=latest,m=manifest(r),op=m.operation;const body=openWork(labels.operations[op.kind]||'变更申请','审批中心 · '+short(id),true);body.append(detailList([['申请状态',badge(requestState(r))],['操作对象',(state.clients||[]).find(c=>c.id===op.clientId)?.name||op.name||op.clientId],['发起人',person(m.applicant.principalId,m.applicant.personId)],['提交时间',fullDate(m.created)],['有效期至',fullDate(m.expires)]]));const section=node('section','detail-section');section.append(node('h3','','人员确认流程'));section.append(steps(m.approvers.map(p=>p.principalId),r.progress?.processed??r.progress?.completed??0,r.progress?.currentPrincipalId,m.approvers));section.append(node('p','form-note',`需要 ${m.threshold} 名不同自然人同意，共 ${m.approvers.length} 名候选人员。放弃不计为同意。`));body.append(section);
+ const details=node('section','detail-section');details.append(node('h3','','本次变更内容'));const rows=[['操作类型',labels.operations[op.kind]||op.kind],['客户端标识',op.clientId]];if(op.name)rows.push(['名称',op.name]);if(op.profileId)rows.push(['认证配置',op.profileId]);if(op.keyVersion&&op.keyVersion!=='0')rows.push(['密钥版本','v'+op.keyVersion]);if(op.rotationOf)rows.push(['轮换来源','v'+op.rotationOf]);if(op.notAfter)rows.push(['新版本到期',fullDate(op.notAfter)]);if(op.retireAt)rows.push(['旧版本退役',fullDate(op.retireAt)]);if(op.recipientFingerprint)rows.push(['接收方指纹',op.recipientFingerprint]);if(op.rootId)rows.push(['基础根',op.rootId]);if(op.providerId)rows.push(['插件',op.providerId]);details.append(detailList(rows));body.append(details);
+ const tech=node('details','detail-section');tech.append(node('summary','subtle','查看完整性摘要'));tech.append(node('div','technical',r.digest));body.append(tech);
+ const actions=$('#dialog-actions');if(isCurrent(r)){
+  const proof=state.verified.get(r.id);const verified=proof&&proof>Date.now();
+  if(!verified){actions.append(button('完成本人验证',async()=>{closeWork();await startMFA(r.id,()=>openRequest(r.id));},''));body.append(node('p','notice','请先针对本次申请完成本人的验证组合，再核对并确认。'));}
+  else{const approve=()=>confirmVote(r,true);actions.append(button('拒绝',()=>confirmVote(r,false),'plain'));if(r.progress)actions.append(button('本人放弃并转交',()=>confirmSkip(r),'plain'));actions.append(button('确认批准'+(r.progress&&r.progress.completed+1<r.progress.m?'并转交':''),approve,''));}
+ }else if(canExecute(r)){actions.append(button('确认执行变更',()=>confirmOperation('执行已批准的变更','将执行本申请冻结的内容，不接受追加或替换操作参数。',async()=>{await api(`/api/requests/${encodeURIComponent(r.id)}/execute`,'POST',{digest:r.digest});closeWork();toast('变更已执行。');await refresh();}),' '));}else{actions.append(button('关闭',closeWork,'plain'));if(r.progress?.currentPrincipalId&&requestState(r)==='pending')body.append(node('p','notice','当前等待 '+person(r.progress.currentPrincipalId)+' 完成本人验证并确认。'));}
+}
+function confirmVote(r,accept) {confirmOperation(accept?'批准本次申请':'拒绝本次申请',accept?'确认后计入本人同意票，并按策略流转。不会自动执行密钥操作。':'拒绝后本申请结束，不会继续交给下一人。',async()=>{const out=await api(`/api/requests/${encodeURIComponent(r.id)}/votes`,'POST',{digest:r.digest,accept});closeWork();state.verified.delete(r.id);toast(out.decision==='approved'?'审批门槛已满足，等待原申请人执行。':accept?'本人确认已记录，已转交下一位。':'申请已拒绝。');await refresh();},!accept);}
+function confirmSkip(r) {const body=openWork('本人放弃并转交','不计赞成票');body.append(node('p','section-description','只有当前人员可以放弃。若剩余人员不足以达到 M，申请将结束，不会降低门槛。'));const form=node('form','');form.id='skip-form';const label=node('label','','放弃原因');const input=node('textarea');input.name='reason';input.required=true;input.maxLength=256;input.rows=3;label.append(input);form.append(label);body.append(form);formAction(form,'确认放弃并转交',async d=>{await api(`/api/requests/${encodeURIComponent(r.id)}/skip`,'POST',{digest:r.digest,reason:d.get('reason').trim()});closeWork();toast('本人放弃已记录，请查看新的流转状态。');await refresh();});}
+let afterMFA=null;
+async function startMFA(purpose,after=null) {const epoch=state.epoch,ticket=++state.mfaEpoch;const response=await api('/api/mfa/challenges','POST',{purpose});if(epoch!==state.epoch||ticket!==state.mfaEpoch||!state.session)return;if($('#work-dialog').open)closeWork();afterMFA=after;state.mfa=response.state;$('#mfa-title').textContent=purpose==='management'?'完成本人验证':'验证本次审批';$('#mfa-context').textContent=purpose==='management'?'使用本人已登记的验证方式完成管理验证。':'验证仅用于当前申请，完成后仍需你核对并确认，才会交接给下一人。';notice($('#mfa-error'),'');renderMFA(response);const d=$('#mfa-dialog');if(!d.open)d.showModal();}
+function renderMFA(response) {const ticket=state.mfaEpoch;const current=()=>ticket===state.mfaEpoch&&state.mfa?.id===response.state.id&&!!state.session;const m=response.state;state.mfa=m;const passed=new Set(m.verified);const complete=m.completed;$('#mfa-progress').replaceChildren(node('div','mfa-progress',complete?'本人验证已完成，请返回继续确认。':`已完成 ${passed.size} 项绑定验证 · 有效期至 ${date(m.expiresAt)}`));$('#mfa-finish').hidden=!complete;const container=$('#mfa-factors');container.replaceChildren();
+ for(const f of m.factors){const card=node('div','mfa-factor'),head=node('div','mfa-factor-head');head.append(icon(f.method),node('h3','',f.label),badge(passed.has(f.id)?'已通过':!response.available[f.method]?'插件未接入':'待验证',passed.has(f.id)?'success':'neutral'));card.append(head);if(complete||passed.has(f.id)||!response.available[f.method]){if(!response.available[f.method])card.append(node('p','','该插件尚未接入，不能计入验证。'));container.append(card);continue;}
+ const input=node('input');input.type='password';input.inputMode='numeric';input.autocomplete='one-time-code';input.maxLength=f.method==='totp'?6:8;input.placeholder=f.method==='totp'?'六位动态码':'八位验证码';input.setAttribute('aria-label',f.label+' 验证码');if(f.method!=='hardware')card.append(input);const actions=node('div','mfa-factor-actions');const message=node('p','','先准备验证，再输入本人的验证码。');const base=`/api/mfa/challenges/${encodeURIComponent(m.id)}/factors/${encodeURIComponent(f.id)}`;let hardwareOptions=null;
+ const verify=button('核验此方式',async()=>{notice($('#mfa-error'),'');let body={code:input.value};input.value='';if(f.method==='hardware')body={proof:await hardwareAssertion(hardwareOptions)};try{const next=await api(base+'/verify','POST',body);if(!current())return;renderMFA(next);if(next.state.completed){state.verified.set(m.purpose,new Date(m.expiresAt).getTime());await refresh();}}catch(e){if(current())notice($('#mfa-error'),e.message,'danger');throw e;}},'small');verify.disabled=true;
+ const prepare=button(f.method==='totp'?'准备动态码验证':f.method==='hardware'?'开始硬件验证':'发送验证码',async()=>{const attempt=await api(base,'POST',{});if(!current())return;hardwareOptions=attempt.options;verify.disabled=false;message.textContent=f.method==='totp'?'请输入验证器当前显示的动态码。':f.method==='hardware'?'请按浏览器提示使用本人的硬件安全密钥。':'验证码已交由插件发送，请在有效期内输入。';},'plain small');actions.append(prepare,verify);card.append(actions,message);container.append(card);}
+}
+async function hardwareAssertion(options) {if(!options?.publicKey)throw new Error('硬件插件未提供浏览器支持的验证契约，请联系接入人员。');const decode=value=>Uint8Array.from(atob(value.replace(/-/g,'+').replace(/_/g,'/')),c=>c.charCodeAt(0));const encode=value=>btoa(String.fromCharCode(...new Uint8Array(value))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');const publicKey=structuredClone(options.publicKey);publicKey.userVerification='required';publicKey.challenge=decode(publicKey.challenge);if(publicKey.allowCredentials)for(const c of publicKey.allowCredentials)c.id=decode(c.id);const assertion=await navigator.credentials.get({publicKey});if(!assertion)throw new Error('硬件验证未完成。');return {id:assertion.id,rawId:encode(assertion.rawId),type:assertion.type,response:{clientDataJSON:encode(assertion.response.clientDataJSON),authenticatorData:encode(assertion.response.authenticatorData),signature:encode(assertion.response.signature),userHandle:assertion.response.userHandle?encode(assertion.response.userHandle):null}};}
+function openPolicyDraft() {const p=state.settings;const order=[...p.approvers];const body=openWork('预览人员顺序变更','变更计划 · 尚未生效');body.append(node('p','notice','此页面生成受控离线变更计划，不直接修改当前策略。新门槛和顺序须由授权运维核验后应用。'));const form=node('form','form-grid');form.id='policy-draft';const label=node('label','full','需要同意的人员数量 M');const m=node('input');m.name='m';m.type='number';m.min=2;m.max=order.length;m.value=p.m;label.append(m);form.append(label);const list=node('div','full');const render=()=>{list.replaceChildren();order.forEach((id,i)=>{const row=node('div','policy-sort-row');row.append(node('span','',i+1),node('span','',person(id)));const up=button('↑',()=>{[order[i-1],order[i]]=[order[i],order[i-1]];render();},'plain');up.disabled=i===0;up.setAttribute('aria-label','上移 '+person(id));const down=button('↓',()=>{[order[i+1],order[i]]=[order[i],order[i+1]];render();},'plain');down.disabled=i===order.length-1;down.setAttribute('aria-label','下移 '+person(id));row.append(up,down);list.append(row);});};render();form.append(list);body.append(form);formAction(form,'下载变更计划',d=>{downloadJSON({kind:'keygate-approval-policy-proposal-v1',environment:state.context.environment,expectedVersion:p.version,threshold:Number(d.get('m')),approvers:order,sequential:true},'keygate-policy-proposal.json');toast('变更计划已下载，当前策略未改变。');closeWork();});}
+function downloadJSON(value,name) {const url=URL.createObjectURL(new Blob([JSON.stringify(value,null,2)+'\n'],{type:'application/json'}));const link=node('a');link.href=url;link.download=name;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
+function bindingGuide() {const body=openWork('绑定与恢复要求','本人验证方式');body.append(node('p','section-description','当前采用受控离线绑定，不在普通管理请求中接收种子、私钥或绕过现有验证。'));body.append(detailList([['邮件 / 短信','核验联系方式归属，并配置可信投递插件。'],['TOTP','通过受控通道单独导入本人的随机种子，后台不展示或下载种子。'],['硬件安全密钥','由硬件插件完成注册与凭据归属核验，再登记凭据引用。'],['丢失与换绑','两名不同自然人核验后更新绑定，撤销原有验证证明；不降低门槛。']]));$('#dialog-actions').append(button('知道了',closeWork,'plain'));}
+function openRevoke(key) {const client=(state.clients||[]).find(c=>c.id===state.selectedClient);if(!client)return;const body=openWork('泄露撤销','立即减权 · 不可恢复');body.append(node('p','notice danger',`当前对象：${client.name} / v${key.Version}。撤销后该版本不能重新启用，根撤销会隔离全部依赖客户端。`));const form=node('form','form-grid');form.id='revoke-form';const scope=node('select');scope.name='scope';for(const [v,t] of [['version','仅当前密钥版本'],['root','当前基础根及全部依赖']]){const o=node('option','',t);o.value=v;scope.append(o);}scope.options[1].textContent='当前签发根 · '+(state.config?.rootId||'不可用');scope.options[1].disabled=!state.config?.rootId;const l=node('label','full','撤销范围');l.append(scope);form.append(l);const reason=node('select');reason.name='reason';for(const [v,t] of [['suspected_leak','疑似泄露'],['confirmed_leak','确认泄露'],['lost_delivery','交付丢失'],['scope_unknown','影响范围未知']]){const o=node('option','',t);o.value=v;reason.append(o);}const rl=node('label','full','原因');rl.append(reason);form.append(rl);const check=node('label','check-row full');const input=node('input');input.type='checkbox';input.required=true;scope.addEventListener('change',()=>{input.checked=false;body.querySelector('.notice').textContent=scope.value==='root'?'将撤销当前签发根 '+state.config.rootId+' 及其全部依赖，相关客户端将保持隔离。':`将撤销 ${client.name} / v${key.Version}，该版本不能恢复。`;});check.append(input,node('span','','我已确认撤销对象，理解此操作不可恢复。'));form.append(check);body.append(form);const incident='incident-'+crypto.randomUUID();formAction(form,'确认立即撤销',async d=>{const root=d.get('scope')==='root';await api('/api/revocations','POST',{incidentId:incident,reason:d.get('reason'),clientId:root?'':client.id,keyVersion:root?'0':String(key.Version),rootId:root?state.config.rootId:''});closeWork();toast('撤销已记录，受影响认证已拒绝。');await loadKeys();});}
+async function loadRecoveries() {const id=state.selectedClient,epoch=state.epoch,ticket=++state.recoveryEpoch;const current=()=>epoch===state.epoch&&ticket===state.recoveryEpoch&&id===state.selectedClient&&!!state.session;if(!id){empty($('#recovery-table'),'选择客户端查看恢复任务','异常恢复状态与密钥状态分别管理。');return;}try{const records=await api(`/api/clients/${encodeURIComponent(id)}/recoveries`);if(!current())return;if(!records.length){empty($('#recovery-table'),'暂无恢复任务','已进入隔离的客户端可发起恢复密钥申请。');return;}table($('#recovery-table'),['任务','版本','状态','创建时间','操作'],records.map(r=>[short(r.ID),'v'+r.Version,badge(r.State),date(r.CreatedAt),button('中止并保持隔离',()=>confirmOperation('中止恢复','中止后保持隔离，不会重新启用旧密钥。',async()=>{await api(`/api/recoveries/${encodeURIComponent(r.ID)}/abort`,'POST',{});closeWork();toast('恢复任务已中止。');await loadRecoveries();},true),'text-button')]));}catch(e){if(current())empty($('#recovery-table'),'无法读取恢复任务',e.message);}}
+function openRoot() {const body=openWork('申请新的基础根','异常恢复');body.append(node('p','notice','需要多人批准后才会生成并启用新的开发软件根，不恢复旧根或旧版本。'));const form=node('form');form.id='root-form';const label=node('label','','基础根标识');const input=node('input');input.name='rootId';input.required=true;input.maxLength=128;input.pattern='[a-zA-Z0-9][a-zA-Z0-9._\\-]{0,127}';input.value='root-'+crypto.randomUUID().slice(0,8);label.append(input);form.append(label);body.append(form);const submit=operationSubmitter();formAction(form,'提交审批申请',d=>submit({kind:'root_provision',clientId:'root-management',expectedRevision:'0',name:'',profileId:'',profileVersion:'0',rootId:d.get('rootId')}));}
+function auditFilter(exportMode=false) {const d=new FormData($('#audit-form'));const from=new Date(d.get('from')+'T00:00:00'),until=new Date(d.get('until')+'T23:59:59');if(!Number.isFinite(from.getTime())||!Number.isFinite(until.getTime())||until<=from||until-from>31*86400000)throw new Error('请选择不超过31天的有效查询区间。');return {clientId:d.get('clientId').trim(),action:d.get('action'),result:'',requestId:'',targetId:'',after:'0',limit:exportMode?5000:100,from:from.toISOString(),until:until.toISOString()};}
+async function loadAudit() {const epoch=state.epoch,ticket=++state.auditEpoch;const rows=await api('/api/audit/query','POST',auditFilter());if(epoch!==state.epoch||ticket!==state.auditEpoch||!state.session)return;if(!rows.length){empty($('#audit-table'),'所选范围没有记录','尝试调整时间或筛选条件。');return;}table($('#audit-table'),['时间','操作人员','操作','对象','结果'],rows.map(r=>[date(r.recordedAt),textCell(person(r.actorId),short(r.actorId)),labels.actions[r.action]||r.action,short(r.targetId),badge(r.result,['denied','rejected'].includes(r.result)?'danger':['success','verified','accepted'].includes(r.result)?'success':'neutral')]));$('#audit-footer').textContent=`已返回 ${rows.length} 条，最多100条；完整范围请使用导出。`;}
+async function loadExports() {const epoch=state.epoch,ticket=++state.exportEpoch;const rows=await api('/api/audit/exports');if(epoch!==state.epoch||ticket!==state.exportEpoch||!state.session)return;if(!rows.length){empty($('#export-table'),'暂无导出任务','导出任务仅本人可见，下载时再次核验权限。');return;}table($('#export-table'),['任务','记录数量','到期时间','状态','操作'],rows.map(r=>[short(r.id||r.ID),r.count??r.Count,date(r.expiresAt||r.ExpiresAt),badge(r.state||r.State),button('下载快照',()=>downloadAudit(r.id||r.ID),'text-button')]));}
+async function downloadAudit(id) {const epoch=state.epoch;const response=await fetch(`/api/audit/exports/${encodeURIComponent(id)}`,{credentials:'same-origin',cache:'no-store',redirect:'error',signal:AbortSignal.timeout(12000)});if(!response.ok)throw new Error(errorMessages[response.status]||'下载失败。');const blob=await response.blob();if(epoch!==state.epoch||!state.session)return;const url=URL.createObjectURL(blob);const a=node('a');a.href=url;a.download='keygate-audit.jsonl';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
+function renderPage() {const page=location.hash.slice(1)||'overview';state.page=Object.hasOwn(labels.pages,page)?page:'overview';for(const el of document.querySelectorAll('[data-page]'))el.hidden=el.dataset.page!==state.page;for(const el of document.querySelectorAll('[data-nav]')){el.classList.toggle('active',el.dataset.nav===state.page);if(el.dataset.nav===state.page)el.setAttribute('aria-current','page');else el.removeAttribute('aria-current');}$('#page-title').textContent=labels.pages[state.page][0];$('#breadcrumb').textContent=labels.pages[state.page][0];$('#page-description').textContent=labels.pages[state.page][1];renderIdentity();}
+for(const d of document.querySelectorAll('dialog'))for(const b of d.querySelectorAll('.close-dialog'))b.addEventListener('click',()=>d.close());
+$('#work-dialog').addEventListener('close',()=>{state.dialogEpoch++;});
+$('#mfa-dialog').addEventListener('close',()=>{state.mfaEpoch++;afterMFA=null;state.mfa=null;$('#mfa-factors').replaceChildren();});
+$('#refresh').addEventListener('click',refresh);$('#collapse-nav').addEventListener('click',()=>{document.body.classList.toggle('collapsed');$('#collapse-nav').setAttribute('aria-expanded',String(!document.body.classList.contains('collapsed')));});
+$('#logout').addEventListener('click',()=>busy($('#logout'),async()=>{await api('/auth/logout','POST');clearIdentity();toast('已退出。');}));
+for(const id of ['client-search','client-type','client-status'])$('#'+id).addEventListener(id==='client-search'?'input':'change',()=>{state.clientPage=0;renderClients();});
+for(const b of $('#approval-tabs').querySelectorAll('button'))b.addEventListener('click',()=>{state.approvalFilter=b.dataset.filter;for(const n of $('#approval-tabs').querySelectorAll('button'))n.classList.toggle('active',n===b);renderApprovals();});$('#approval-status').addEventListener('change',renderApprovals);
+$('#key-client').addEventListener('change',()=>selectClient($('#key-client').value));$('#load-keys').addEventListener('click',()=>busy($('#load-keys'),loadKeys));$('#issue-key').addEventListener('click',()=>openKey());$('#load-recoveries').addEventListener('click',()=>busy($('#load-recoveries'),loadRecoveries));$('#new-root').addEventListener('click',openRoot);
+$('#verify-management').addEventListener('click',()=>busy($('#verify-management'),()=>startMFA('management')));$('#binding-guide').addEventListener('click',bindingGuide);
+$('#mfa-finish').addEventListener('click',async()=>{const next=afterMFA;afterMFA=null;$('#mfa-dialog').close();if(next)await next();else toast('本人验证已完成。');});
+$('#audit-form').addEventListener('submit',e=>{e.preventDefault();busy(e.submitter,loadAudit);});$('#export-audit').addEventListener('click',()=>busy($('#export-audit'),async()=>{await api('/api/audit/exports','POST',auditFilter(true));toast('导出快照已生成。');await loadExports();}));$('#load-exports').addEventListener('click',()=>busy($('#load-exports'),loadExports));
+const localDay=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;$('#audit-form').elements.from.value=localDay(new Date(Date.now()-86400000));$('#audit-form').elements.until.value=localDay(new Date());
+window.addEventListener('hashchange',renderPage);renderAll();refresh();
