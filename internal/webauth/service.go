@@ -44,6 +44,7 @@ type Config struct {
 	PolicyVersion                                     uint64
 }
 type Service struct {
+	handlerStarted  atomic.Bool
 	flow            *developmentFlow
 	logger          *slog.Logger
 	lastRejection   atomic.Int64
@@ -146,7 +147,12 @@ func csrf(token string) string {
 }
 func fail(w http.ResponseWriter, status int) { http.Error(w, http.StatusText(status), status) }
 func (s *Service) Handler() http.Handler {
+	s.handlerStarted.Store(true)
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health/live", func(w http.ResponseWriter, r *http.Request) {
+		businessJSON(w, 200, map[string]string{"status": "alive"})
+	})
+	mux.HandleFunc("GET /health/ready", s.readiness)
 	if s.flow != nil {
 		s.flowRoutes(mux)
 	}

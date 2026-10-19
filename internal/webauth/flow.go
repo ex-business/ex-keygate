@@ -55,7 +55,7 @@ func (l *requestLimiter) allow() bool {
 // EnableSimulatedFlow 必须由开发启动命令显式调用；三个模拟账号不代表真实的三名人员或 MFA。
 // 每次启动创建隔离的临时安全域和软件根，绝不根据“缺少管理员”重开已有域初始化。
 func (s *Service) EnableSimulatedFlow(ctx context.Context) error {
-	if s.flow != nil || !s.config.Identity.DevelopmentMode || s.config.Identity.ClientID != mocksso.ClientID || len(s.config.Identity.AllowedACR) != 1 || s.config.Identity.AllowedACR[0] != mocksso.SimulatedACR {
+	if s.handlerStarted.Load() || s.flow != nil || !s.config.Identity.DevelopmentMode || s.config.Identity.ClientID != mocksso.ClientID || len(s.config.Identity.AllowedACR) != 1 || s.config.Identity.AllowedACR[0] != mocksso.SimulatedACR {
 		return ErrConfig
 	}
 	environment := "demo-" + hexToken()
@@ -136,7 +136,7 @@ func (f *developmentFlow) keyFor(root string) *storage.DevelopmentKeys {
 // ResumeQuarantinedSimulatedFlow 只恢复显式核验后的开发管理域；不重开 bootstrap，也不加载或猜测旧根。
 // 空根集合使所有旧客户端认证拒绝，必须经新根和隔离换钥的独立多人审批才能恢复。
 func (s *Service) ResumeQuarantinedSimulatedFlow(ctx context.Context, environment string) error {
-	if s.flow != nil || !s.config.Identity.DevelopmentMode || s.config.Identity.ClientID != mocksso.ClientID || len(s.config.Identity.AllowedACR) != 1 || s.config.Identity.AllowedACR[0] != mocksso.SimulatedACR {
+	if s.handlerStarted.Load() || s.flow != nil || !s.config.Identity.DevelopmentMode || s.config.Identity.ClientID != mocksso.ClientID || len(s.config.Identity.AllowedACR) != 1 || s.config.Identity.AllowedACR[0] != mocksso.SimulatedACR {
 		return ErrConfig
 	}
 	c, e := storage.NewDevelopmentControl(s.config.Environment, environment, s.profile, s.store)
