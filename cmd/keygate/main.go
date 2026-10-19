@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"ex-keygate/internal/config"
 	"log/slog"
 	"net/http"
 	"os"
@@ -11,6 +12,11 @@ import (
 )
 
 func main() {
+	cfg, err := config.Load(os.Getenv)
+	if err != nil {
+		slog.Error("部署安全配置校验失败", "error", err)
+		os.Exit(1)
+	}
 	// Expose liveness only on loopback until business authentication is implemented.
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health/live", func(w http.ResponseWriter, r *http.Request) {
@@ -37,7 +43,7 @@ func main() {
 			_ = server.Close()
 		}
 	}()
-	slog.Info("ExKeyGate 开发骨架启动，尚未提供认证能力", "address", server.Addr)
+	slog.Info("ExKeyGate 开发骨架启动，尚未提供认证能力", "address", server.Addr, "environment", cfg.Environment, "root_mode", cfg.RootMode)
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		slog.Error("服务启动失败", "error", err)
 		os.Exit(1)
