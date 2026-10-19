@@ -142,3 +142,42 @@ type ChallengeIssuer interface {
 type ChallengeVerifier interface {
 	VerifyChallenge(context.Context, HardwareChallenge, []byte) error
 }
+
+// RootReference 仅标识托管根，不包含根材料；实际身份必须由适配器核验，不能靠别名重置预算或用途。
+type RootReference struct {
+	ProviderID  string `json:"providerId"`
+	KeyID       string `json:"keyId"`
+	Version     string `json:"version"`
+	Fingerprint string `json:"fingerprint"`
+	Purpose     string `json:"purpose"`
+}
+type RootWrapRequest struct {
+	OperationID string
+	Root        RootReference
+	Binding     []byte
+	Plaintext   []byte
+}
+type RootEnvelope struct {
+	Root       RootReference
+	Format     string
+	Ciphertext []byte
+}
+type RootOperationResult struct {
+	OperationID string
+	State       string
+	Envelope    *RootEnvelope
+}
+
+// RootCustodian 预留 KMS/HSM 的不可变根身份、用途绑定及权威结果核对接口。
+// 当前软件执行器不接受远程替换；真实适配器必须完成幂等、预算、超时 UNKNOWN 和安全审查后才可装配。
+type RootCustodian interface {
+	InspectRoot(context.Context, RootReference) (RootReference, error)
+	WrapRoot(context.Context, RootWrapRequest) (RootEnvelope, error)
+	UnwrapRoot(context.Context, RootEnvelope, []byte) ([]byte, error)
+	QueryRootOperation(context.Context, string) (RootOperationResult, error)
+}
+
+// RootOperationFencer 在旧执行器隔离得到权威确认前禁止接管 UNKNOWN 操作；声明接口不代表已实现硬件能力。
+type RootOperationFencer interface {
+	FenceRootOperation(context.Context, string, string) error
+}

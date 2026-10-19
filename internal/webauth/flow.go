@@ -129,3 +129,21 @@ func (f *developmentFlow) keyFor(root string) *storage.DevelopmentKeys {
 	defer f.mu.Unlock()
 	return f.roots[root]
 }
+
+// ResumeQuarantinedSimulatedFlow 只恢复显式核验后的开发管理域；不重开 bootstrap，也不加载或猜测旧根。
+// 空根集合使所有旧客户端认证拒绝，必须经新根和隔离换钥的独立多人审批才能恢复。
+func (s *Service) ResumeQuarantinedSimulatedFlow(ctx context.Context, environment string) error {
+	if s.flow != nil || !s.config.Identity.DevelopmentMode || s.config.Identity.ClientID != mocksso.ClientID || len(s.config.Identity.AllowedACR) != 1 || s.config.Identity.AllowedACR[0] != mocksso.SimulatedACR {
+		return ErrConfig
+	}
+	c, e := storage.NewDevelopmentControl(s.config.Environment, environment, s.profile, s.store)
+	if e != nil {
+		return e
+	}
+	if e = c.CheckQuarantinedOffline(ctx); e != nil {
+		return e
+	}
+	s.flow = &developmentFlow{control: c, environment: environment, roots: map[string]*storage.DevelopmentKeys{}}
+	s.logger.WarnContext(ctx, "已恢复隔离的开发管理域，旧根未加载，客户端须重新审批换钥", "environment", environment, "result", "quarantined")
+	return nil
+}

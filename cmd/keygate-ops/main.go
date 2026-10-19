@@ -25,7 +25,7 @@ func main() {
 	}
 }
 func run() error {
-	action := flag.String("action", "", "init-signing / archive / seal-archive / verify-archive")
+	action := flag.String("action", "", "init-signing / archive / seal-archive / verify-archive / capture-state / verify-state / quarantine-state")
 	environment := flag.String("environment", "", "固定安全域")
 	directory := flag.String("archive-dir", "", "独立归档目录（0700）")
 	private := flag.String("signing-key", "", "独立 Ed25519 私钥文件（0600）")
@@ -58,7 +58,7 @@ func run() error {
 		return errors.New("可信公钥文件无效")
 	}
 	var key []byte
-	if *action == "archive" || *action == "seal-archive" {
+	if *action == "archive" || *action == "seal-archive" || *action == "capture-state" {
 		key, e = auditarchive.ReadPrivate(*private, 64)
 		if e != nil || len(key) != 64 {
 			return errors.New("签名私钥文件无效")
@@ -81,6 +81,43 @@ func run() error {
 		return e
 	}
 	switch *action {
+	case "capture-state":
+		state, e := store.CaptureSafetyCheckpoint(ctx, *environment)
+		if e != nil {
+			return e
+		}
+		raw, e := json.Marshal(state)
+		if e != nil {
+			return e
+		}
+		signed, e := json.Marshal(auditarchive.Signed{Payload: raw, Signature: ed25519.Sign(key, raw)})
+		if e != nil {
+			return e
+		}
+		if e = auditarchive.WriteOnce(*checkpoint, signed); e != nil {
+			return e
+		}
+		fmt.Println("安全状态签名校验点已创建；请在备份之外独立保管最新版本")
+		return nil
+	case "verify-state", "quarantine-state":
+		raw, e := auditarchive.VerifySignedFile(*checkpoint, pub)
+		if e != nil {
+			return e
+		}
+		var state storage.SafetyCheckpoint
+		if json.Unmarshal(raw, &state) != nil || state.Environment != *environment {
+			return auditarchive.ErrIntegrity
+		}
+		if *action == "verify-state" {
+			e = store.VerifySafetyCheckpoint(ctx, state)
+		} else {
+			e = store.QuarantineRestored(ctx, state, "restore-"+state.ID)
+		}
+		if e != nil {
+			return e
+		}
+		fmt.Println("校验通过；quarantine-state 仅隔离旧授权，不恢复认证")
+		return nil
 	case "archive":
 		n, e := store.ArchiveAuditBatch(ctx, *environment, auditarchive.Files{Dir: *directory, Key: key}, *limit)
 		if e != nil {

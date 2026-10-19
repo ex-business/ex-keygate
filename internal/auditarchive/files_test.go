@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -84,5 +85,32 @@ func TestPrivateReaderRejectsOversizeAndPermissions(t *testing.T) {
 	}
 	if _, e := ReadPrivate(p, 100); e == nil {
 		t.Fatal("公开文件接受")
+	}
+}
+
+func TestIndependentSignatureRejectsWrongTrustAndTamper(t *testing.T) {
+	dir := t.TempDir()
+	_ = os.Chmod(dir, 0700)
+	pub, key, _ := ed25519.GenerateKey(rand.Reader)
+	raw := []byte(`{"kind":"keygate-state-v1"}`)
+	signed, e := json.Marshal(Signed{raw, ed25519.Sign(key, raw)})
+	if e != nil {
+		t.Fatal(e)
+	}
+	path := filepath.Join(dir, "checkpoint")
+	if e = WriteOnce(path, signed); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = VerifySignedFile(path, pub); e != nil {
+		t.Fatal(e)
+	}
+	other, _, _ := ed25519.GenerateKey(rand.Reader)
+	if _, e = VerifySignedFile(path, other); e == nil {
+		t.Fatal("信任文件自报公钥")
+	}
+	signed[len(signed)-3] ^= 1
+	_ = os.WriteFile(path, signed, 0600)
+	if _, e = VerifySignedFile(path, pub); e == nil {
+		t.Fatal("校验点篡改接受")
 	}
 }

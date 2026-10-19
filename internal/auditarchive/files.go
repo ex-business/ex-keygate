@@ -192,3 +192,19 @@ func VerifyInventory(dir, environment string, pub ed25519.PublicKey, visit func(
 	out.Digest = hex.EncodeToString(h.Sum(nil))
 	return out, nil
 }
+
+// VerifySignedFile 只验证固定外部公钥签名，不从文件自带字段认领信任；业务调用者再校验 payload 类型与作用域。
+func VerifySignedFile(path string, pub ed25519.PublicKey) ([]byte, error) {
+	if len(pub) != ed25519.PublicKeySize {
+		return nil, ErrIntegrity
+	}
+	raw, e := ReadPrivate(path, 1<<20)
+	if e != nil {
+		return nil, e
+	}
+	var signed Signed
+	if json.Unmarshal(raw, &signed) != nil || !ed25519.Verify(pub, signed.Payload, signed.Signature) {
+		return nil, ErrIntegrity
+	}
+	return signed.Payload, nil
+}

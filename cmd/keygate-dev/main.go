@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
@@ -23,6 +24,7 @@ import (
 	"syscall"
 	"time"
 
+	"ex-keygate/internal/auditarchive"
 	"ex-keygate/internal/config"
 	"ex-keygate/internal/devtls"
 	"ex-keygate/internal/identity"
@@ -39,6 +41,9 @@ func main() {
 	}
 }
 func run() error {
+	resumeEnvironment := flag.String("resume-environment", "", "显式恢复已隔离的开发管理域")
+	resumeCheckpoint := flag.String("resume-checkpoint", "", "隔离后最新的独立签名状态校验点")
+	resumePublicKey := flag.String("resume-public-key", "", "独立固定的可信校验公钥文件")
 	enableFlow := flag.Bool("enable-key-flow", false, "Enable simulated development-only client/key workflow")
 	port := flag.Int("port", 18761, "Loopback console TLS port")
 	databaseFile := flag.String("database-file", "data/dev-console/database-url", "Private disposable development database URL file")
@@ -130,7 +135,29 @@ func run() error {
 	if err != nil {
 		return errors.New("development login configuration rejected")
 	}
-	if *enableFlow {
+	if *resumeEnvironment != "" {
+		if !*enableFlow {
+			return errors.New("恢复必须显式启用开发流程")
+		}
+		pub, e := auditarchive.ReadPrivate(*resumePublicKey, 32)
+		if e != nil {
+			return errors.New("恢复可信公钥不可用")
+		}
+		raw, e := auditarchive.VerifySignedFile(*resumeCheckpoint, ed25519.PublicKey(pub))
+		if e != nil {
+			return errors.New("恢复校验点签名无效")
+		}
+		var expected storage.SafetyCheckpoint
+		if json.Unmarshal(raw, &expected) != nil || expected.Environment != *resumeEnvironment {
+			return errors.New("恢复域与校验点不符")
+		}
+		if e = store.VerifySafetyCheckpoint(startup, expected); e != nil {
+			return errors.New("恢复状态与外部校验点不一致")
+		}
+		if e = service.ResumeQuarantinedSimulatedFlow(startup, *resumeEnvironment); e != nil {
+			return errors.New("恢复域尚未完成隔离")
+		}
+	} else if *enableFlow {
 		if err = service.EnableSimulatedFlow(startup); err != nil {
 			return errors.New("simulated key workflow initialization failed")
 		}
