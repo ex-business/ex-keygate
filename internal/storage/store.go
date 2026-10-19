@@ -115,6 +115,13 @@ func appendAudit(ctx context.Context, tx *sql.Tx, a Audit) error {
 		return ErrInvalid
 	}
 	_, err := tx.ExecContext(ctx, `INSERT INTO keygate.audit_events(event_id,request_id,actor_id,action,target_id,result) VALUES($1,$2,$3,$4,$5,$6)`, a.EventID, a.RequestID, a.ActorID, a.Action, a.TargetID, a.Result)
+	if err != nil {
+		return err
+	}
+	// 软件根预算预留也进入对应域的可靠归档队列，不把独立事务用量事实遗漏在生命周期审计之外。
+	if a.Action == "root_wrap_reserve" {
+		_, err = tx.ExecContext(ctx, `INSERT INTO keygate.scoped_audit(event_id,environment,client_id) SELECT $1,environment,'' FROM keygate.client_roots WHERE root_id=$2`, a.EventID, a.TargetID)
+	}
 	return err
 }
 

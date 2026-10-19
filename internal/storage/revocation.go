@@ -67,9 +67,7 @@ func (c *DevelopmentControl) Revoke(ctx context.Context, token string, in Revoca
 	if !errors.Is(e, sql.ErrNoRows) {
 		return e
 	}
-	target := in.ClientID
 	if root {
-		target = in.RootID
 		result, e := tx.ExecContext(ctx, `UPDATE keygate.client_roots SET enabled=false WHERE environment=$1 AND root_id=$2`, c.environment, in.RootID)
 		if e != nil {
 			return e
@@ -101,7 +99,7 @@ func (c *DevelopmentControl) Revoke(ctx context.Context, token string, in Revoca
 	if _, e = tx.ExecContext(ctx, `UPDATE keygate.rotation_tasks t SET state='failed',completed_at=clock_timestamp() WHERE t.environment=$1 AND t.state IN ('preparing','overlap') AND EXISTS(SELECT 1 FROM keygate.key_versions k WHERE k.environment=t.environment AND k.client_id=t.client_id AND k.version IN(t.old_version,t.new_version) AND k.state='compromised')`, c.environment); e != nil {
 		return e
 	}
-	if e = c.audit(ctx, tx, trace, a.id, "key_revoke", target, "compromised"); e != nil {
+	if e = c.audit(ctx, tx, trace, a.id, "key_revoke", in.IncidentID, "compromised"); e != nil {
 		return e
 	}
 	if e = tx.Commit(); e != nil {

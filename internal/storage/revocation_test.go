@@ -70,12 +70,13 @@ func TestRevocationAuditRollback(t *testing.T) {
 	r := f.issue(t, 1)
 	_ = r
 	ctx := context.Background()
+	incident := unique(t)
 	constraint := "audit_fault_" + unique(t)
-	if _, e := f.f.db.ExecContext(ctx, fmt.Sprintf("ALTER TABLE keygate.audit_events ADD CONSTRAINT %s CHECK(action <> 'key_revoke' OR target_id <> '%s')", constraint, f.k.rootID)); e != nil {
+	if _, e := f.f.db.ExecContext(ctx, fmt.Sprintf("ALTER TABLE keygate.audit_events ADD CONSTRAINT %s CHECK(action <> 'key_revoke' OR target_id <> '%s')", constraint, incident)); e != nil {
 		t.Fatal(e)
 	}
 	defer f.f.db.Exec("ALTER TABLE keygate.audit_events DROP CONSTRAINT IF EXISTS " + constraint)
-	if e := f.f.c.Revoke(ctx, f.f.tokens[0], RevocationInput{IncidentID: unique(t), RootID: f.k.rootID, Reason: "confirmed_leak"}, unique(t)); e == nil {
+	if e := f.f.c.Revoke(ctx, f.f.tokens[0], RevocationInput{IncidentID: incident, RootID: f.k.rootID, Reason: "confirmed_leak"}, unique(t)); e == nil {
 		t.Fatal("审计失败仍撤销")
 	}
 

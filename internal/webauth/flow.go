@@ -73,6 +73,7 @@ func (s *Service) EnableSimulatedFlow(ctx context.Context) error {
 		role := access.Approver
 		if i == 0 {
 			role = access.Requester
+			grants = append(grants, access.Grant{PrincipalID: p.ID, Role: access.Auditor})
 			grants = append(grants, access.Grant{PrincipalID: p.ID, Role: access.EmergencyOperator})
 		}
 		grants = append(grants, access.Grant{PrincipalID: p.ID, Role: role})

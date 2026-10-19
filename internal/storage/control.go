@@ -63,7 +63,15 @@ func (c *DevelopmentControl) audit(ctx context.Context, tx *sql.Tx, request, act
 	if err != nil {
 		return err
 	}
-	return appendAudit(ctx, tx, Audit{event, request, actor, action, target, result})
+	if err = appendAudit(ctx, tx, Audit{event, request, actor, action, target, result}); err != nil {
+		return err
+	}
+	scope, err := c.auditScope(ctx, tx, action, target)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO keygate.scoped_audit(event_id,environment,client_id) VALUES($1,$2,$3)`, event, c.environment, scope)
+	return err
 }
 
 // BootstrapOffline 只能从受控离线入口调用。安全域行是永久初始化哨兵，撤空人员也不能重开。
