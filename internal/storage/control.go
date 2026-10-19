@@ -114,7 +114,7 @@ func (c *DevelopmentControl) BootstrapOffline(ctx context.Context, b Bootstrap, 
 			return ErrInvalid
 		}
 	}
-	tx, err := c.store.db.BeginTx(ctx, nil)
+	tx, err := c.store.beginRuntime(ctx)
 	if err != nil {
 		return err
 	}
@@ -162,7 +162,7 @@ func (c *DevelopmentControl) BootstrapOffline(ctx context.Context, b Bootstrap, 
 // begin 先锁安全域控制行，统一排序所有撤权、投票和执行；首期牺牲同域写吞吐换取清晰原子边界。
 // 普通元信息读取也在该边界内检查权限，避免撤权后继续返回受保护数据。
 func (c *DevelopmentControl) begin(ctx context.Context) (*sql.Tx, error) {
-	tx, e := c.store.db.BeginTx(ctx, nil)
+	tx, e := c.store.beginRuntime(ctx)
 	if e != nil {
 		return nil, e
 	}

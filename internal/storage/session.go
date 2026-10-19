@@ -30,13 +30,12 @@ func validDigest(value string) bool {
 	return err == nil && len(raw) == 32 && hex.EncodeToString(raw) == value
 }
 
-// Login states never store raw browser/state secrets or plaintext PKCE verifiers.
-// The caller must encrypt the verifier with scope-bound key protection first.
+// 登录状态不保存浏览器秘密、原始 state 或明文 PKCE；调用者先按用途绑定加密，再与审计同事务保存。
 func (s *Store) CreateLogin(ctx context.Context, state LoginState, a Audit) error {
 	if !nonzero(state.StateHash) || !nonzero(state.BrowserHash) || !validDigest(state.ProfileHash) || !validNonce(state.Nonce) || len(state.VerifierCipher) == 0 || len(state.VerifierCipher) > 4096 || !a.valid() || a.ActorID != "anonymous" || a.Action != "login_create" || a.Result != "pending" || a.TargetID != hex.EncodeToString(state.StateHash[:]) {
 		return ErrInvalid
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.beginRuntime(ctx)
 	if err != nil {
 		return err
 	}
@@ -51,14 +50,13 @@ func (s *Store) CreateLogin(ctx context.Context, state LoginState, a Audit) erro
 	return tx.Commit()
 }
 
-// ConsumeLogin deletes atomically only when the browser secret, fixed profile and
-// database expiry all match. Audit failure rolls back deletion. Commit errors
-// never return the verifier, even if the database may already have consumed it.
+// ConsumeLogin 仅在浏览器秘密、固定身份配置及数据库有效期均匹配时原子消费；审计失败回滚。
+// 提交不明时绝不返回 verifier，即使数据库可能已经消费，避免节点切换导致重复授权。
 func (s *Store) ConsumeLogin(ctx context.Context, stateHash, browserHash [32]byte, profile string, a Audit) (LoginState, error) {
 	if !nonzero(stateHash) || !nonzero(browserHash) || !validDigest(profile) || !a.valid() || a.ActorID != "anonymous" || a.Action != "login_consume" || a.Result != "consumed" || a.TargetID != hex.EncodeToString(stateHash[:]) {
 		return LoginState{}, ErrInvalid
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.beginRuntime(ctx)
 	if err != nil {
 		return LoginState{}, err
 	}
@@ -88,13 +86,13 @@ type Session struct {
 	AuthenticatedAt, ExpiresAt time.Time
 }
 
-// A session establishes identity only, never local management permissions. Its
-// absolute lifetime cannot extend beyond five minutes after the verified auth.
+// 会话只建立身份，不赋予管理权限；绝对期限不能超过已核验认证时间之后五分钟。
+// 创建、读取及撤销均核验权威节点资格，失效节点不能继续返回受保护会话。
 func (s *Store) CreateSession(ctx context.Context, hash [32]byte, profile, principal string, auth time.Time, a Audit) (Session, error) {
 	if !nonzero(hash) || !validDigest(profile) || !identifier.MatchString(principal) || auth.IsZero() || !a.valid() || a.ActorID != principal || a.Action != "session_create" || a.Result != "success" || a.TargetID != hex.EncodeToString(hash[:]) {
 		return Session{}, ErrInvalid
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.beginRuntime(ctx)
 	if err != nil {
 		return Session{}, err
 	}
@@ -122,18 +120,29 @@ func (s *Store) Session(ctx context.Context, hash [32]byte, profile string) (Ses
 	if !nonzero(hash) || !validDigest(profile) {
 		return Session{}, ErrSession
 	}
+	tx, err := s.beginRuntime(ctx)
+	if err != nil {
+		return Session{}, err
+	}
+	defer tx.Rollback()
 	var session Session
-	err := s.db.QueryRowContext(ctx, `SELECT principal_id,authenticated_at,expires_at FROM keygate.sessions WHERE token_hash=$1 AND profile_hash=$2 AND revoked_at IS NULL AND expires_at>clock_timestamp()`, hash[:], profile).Scan(&session.PrincipalID, &session.AuthenticatedAt, &session.ExpiresAt)
+	err = tx.QueryRowContext(ctx, `SELECT principal_id,authenticated_at,expires_at FROM keygate.sessions WHERE token_hash=$1 AND profile_hash=$2 AND revoked_at IS NULL AND expires_at>clock_timestamp()`, hash[:], profile).Scan(&session.PrincipalID, &session.AuthenticatedAt, &session.ExpiresAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Session{}, ErrSession
 	}
-	return session, err
+	if err != nil {
+		return Session{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return Session{}, err
+	}
+	return session, nil
 }
 func (s *Store) RevokeSession(ctx context.Context, hash [32]byte, profile string, a Audit) error {
 	if !nonzero(hash) || !validDigest(profile) || !a.valid() || a.Action != "session_revoke" || a.Result != "revoked" || a.TargetID != hex.EncodeToString(hash[:]) {
 		return ErrInvalid
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.beginRuntime(ctx)
 	if err != nil {
 		return err
 	}

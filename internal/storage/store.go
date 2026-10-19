@@ -24,13 +24,16 @@ var (
 )
 var identifier = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$`)
 
-type Store struct{ db *sql.DB }
+type Store struct {
+	db   *sql.DB
+	node *NodePermit
+}
 
 func New(db *sql.DB) (*Store, error) {
 	if db == nil {
 		return nil, ErrInvalid
 	}
-	return &Store{db}, nil
+	return &Store{db: db}, nil
 }
 
 // Migrate is explicit, never performed by an ordinary authentication request.
@@ -87,12 +90,9 @@ func (s Scope) valid() bool {
 	return identifier.MatchString(s.Environment) && identifier.MatchString(s.ClientID) && identifier.MatchString(s.KeyID) && s.Version > 0
 }
 
-// ConsumeNonce is the atomic replay decision shared by every participating node.
-// Signature and signed timestamp validity must be checked before calling it.
-// validUntil is derived by the server from the full acceptance window, including
-// clock skew; it must never be an independently client-selected expiry.
-// The authenticator must not accept this request at or after validUntil.
-// A commit error is a denial, not permission to authenticate or blindly retry.
+// ConsumeNonce 使用共享唯一约束作防重放决策，调用前必须验证签名及完整接受时间窗。
+// validUntil 由服务端包含时钟偏差的接受窗口推导，不能由客户端独立选择；到期后拒绝原请求。
+// 节点资格与 nonce 消费共用事务，提交不明视为拒绝，不允许盲目重试后放行。
 func (s *Store) ConsumeNonce(ctx context.Context, scope Scope, nonce []byte, validUntil time.Time) (bool, error) {
 	if s == nil || s.db == nil || !scope.valid() || len(nonce) != 32 || validUntil.IsZero() {
 		return false, ErrInvalid
@@ -100,7 +100,12 @@ func (s *Store) ConsumeNonce(ctx context.Context, scope Scope, nonce []byte, val
 	scopeBytes, _ := json.Marshal(scope)
 	sh := sha256.Sum256(scopeBytes)
 	nh := sha256.Sum256(nonce)
-	result, err := s.db.ExecContext(ctx, `INSERT INTO keygate.replay_nonces(scope_hash,nonce_hash,expires_at)
+	tx, err := s.beginRuntime(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `INSERT INTO keygate.replay_nonces(scope_hash,nonce_hash,expires_at)
  SELECT $1,$2,$3 WHERE $3::timestamptz > clock_timestamp()
  AND $3::timestamptz <= clock_timestamp()+interval '5 minutes'
  ON CONFLICT DO NOTHING`, sh[:], nh[:], validUntil)
@@ -108,17 +113,34 @@ func (s *Store) ConsumeNonce(ctx context.Context, scope Scope, nonce []byte, val
 		return false, err
 	}
 	count, err := result.RowsAffected()
-	return count == 1 && err == nil, err
+	if err != nil {
+		return false, err
+	}
+	if err = tx.Commit(); err != nil {
+		return false, err
+	}
+	return count == 1, nil
 }
 
-// PruneNonces removes only records already expired according to the database.
-// Authenticators must reject old signed timestamps even after these rows vanish.
+// PruneNonces 只删除数据库时钟已判定过期的记录；清理后认证器仍须拒绝旧签名时间。
 func (s *Store) PruneNonces(ctx context.Context) (int64, error) {
-	result, err := s.db.ExecContext(ctx, "DELETE FROM keygate.replay_nonces WHERE expires_at < clock_timestamp()")
+	tx, err := s.beginRuntime(ctx)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, "DELETE FROM keygate.replay_nonces WHERE expires_at < clock_timestamp()")
+	if err != nil {
+		return 0, err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	if err = tx.Commit(); err != nil {
+		return 0, err
+	}
+	return count, nil
 }
 
 type Audit struct{ EventID, RequestID, ActorID, Action, TargetID, Result string }
@@ -146,13 +168,12 @@ func appendAudit(ctx context.Context, tx *sql.Tx, a Audit) error {
 	return err
 }
 
-// RegisterRootBudget belongs to a protected provisioning flow. It cannot change
-// an existing root's usage or raise its limit; retries do not reset the counter.
+// RegisterRootBudget 仅供受控根初始化，禁止重置已有用量或提高上限；登记也核验当前节点资格。
 func (s *Store) RegisterRootBudget(ctx context.Context, rootID string, maximum int64, a Audit) error {
 	if !identifier.MatchString(rootID) || maximum < 1 || maximum > 1<<30 || !a.valid() || a.TargetID != rootID || a.Action != "root_budget_register" || a.Result != "success" {
 		return ErrInvalid
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.beginRuntime(ctx)
 	if err != nil {
 		return err
 	}
@@ -166,13 +187,13 @@ func (s *Store) RegisterRootBudget(ctx context.Context, rootID string, maximum i
 	return tx.Commit()
 }
 
-// ReserveWrappingUse commits before encryption. Failed/uncertain encryption
-// conservatively consumes the reservation; this API deliberately has no refund.
+// ReserveWrappingUse 在加密之前提交共享用量及审计；加密失败或结果不明不退还额度。
+// 同一实际根在所有节点必须使用同一不可变 rootID，不能通过重启节点重置预算。
 func (s *Store) ReserveWrappingUse(ctx context.Context, rootID string, a Audit) error {
 	if !identifier.MatchString(rootID) || !a.valid() || a.TargetID != rootID || a.Action != "root_wrap_reserve" || a.Result != "reserved" {
 		return ErrInvalid
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.beginRuntime(ctx)
 	if err != nil {
 		return err
 	}

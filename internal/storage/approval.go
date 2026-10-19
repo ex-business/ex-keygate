@@ -13,8 +13,7 @@ import (
 
 var ErrApprovalNotFound = errors.New("approval request not found")
 
-// CreateApproval persists a fresh immutable draft and audit together. The caller
-// must authenticate the applicant and load the policy from authoritative state.
+// CreateApproval 将不可变新草案与审计同事务持久化；调用方必须核验申请人及权威策略，节点切换不替代业务授权。
 func (s *Store) CreateApproval(ctx context.Context, r approval.Request, a Audit) error {
 	d := r.Draft()
 	if !identifier.MatchString(d.ID) || r.State() != approval.Pending || r.Revision() != 1 || r.Execution() != approval.NotStarted || !a.valid() || a.ActorID != d.Applicant || a.TargetID != d.ID || a.Action != "approval_create" || a.Result != "pending" {
@@ -28,7 +27,7 @@ func (s *Store) CreateApproval(ctx context.Context, r approval.Request, a Audit)
 	if err != nil || len(raw) > 1<<20 {
 		return ErrInvalid
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.beginRuntime(ctx)
 	if err != nil {
 		return err
 	}
@@ -84,13 +83,23 @@ func (s *Store) Approval(ctx context.Context, id string) (approval.Request, erro
 	if !identifier.MatchString(id) {
 		return approval.Request{}, ErrInvalid
 	}
-	return restoreApproval(s.db.QueryRowContext(ctx, "SELECT draft,votes,revision FROM keygate.approval_requests WHERE id=$1", id))
+	tx, e := s.beginRuntime(ctx)
+	if e != nil {
+		return approval.Request{}, e
+	}
+	defer tx.Rollback()
+	out, e := restoreApproval(tx.QueryRowContext(ctx, "SELECT draft,votes,revision FROM keygate.approval_requests WHERE id=$1", id))
+	if e != nil {
+		return approval.Request{}, e
+	}
+	if e = tx.Commit(); e != nil {
+		return approval.Request{}, e
+	}
+	return out, nil
 }
 
-// CastVote requires the digest reviewed by the approver, not only a request ID.
-// Row locking serializes votes across nodes; audit failure rolls back the vote.
-// The service must still authenticate the actor and enforce current eligibility;
-// this persistence API does not turn a user-supplied actor ID into trusted identity.
+// CastVote 要求审批人审阅的摘要，并通过共享行锁串行跨节点投票；审计失败回滚。
+// 调用方仍须验证人员和当前资格，客户端自报 actor 不能成为受信身份。
 func (s *Store) CastVote(ctx context.Context, id, digest, actor string, accept bool, a Audit) (approval.Request, error) {
 	result := "rejected"
 	if accept {
@@ -99,7 +108,7 @@ func (s *Store) CastVote(ctx context.Context, id, digest, actor string, accept b
 	if !identifier.MatchString(id) || !identifier.MatchString(actor) || !a.valid() || a.ActorID != actor || a.TargetID != id || a.Action != "approval_vote" || a.Result != result {
 		return approval.Request{}, ErrInvalid
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.beginRuntime(ctx)
 	if err != nil {
 		return approval.Request{}, err
 	}

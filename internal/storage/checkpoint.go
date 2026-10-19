@@ -23,6 +23,7 @@ type TableCheckpoint struct {
 type checkpointTable struct{ name, where string }
 
 var checkpointTables = []checkpointTable{
+	{"runtime_cluster", "$1::text<>''"}, {"runtime_nodes", "$1::text<>''"},
 	{"security_domains", "environment=$1"}, {"principals", "environment=$1"}, {"role_grants", "environment=$1"},
 	{"auth_profiles", "environment=$1"}, {"clients", "environment=$1"}, {"control_policies", "environment=$1"}, {"control_policy_members", "environment=$1"},
 	{"control_requests", "environment=$1"}, {"control_votes", "environment=$1"}, {"control_executions", "environment=$1"}, {"control_idempotency", "environment=$1"},
@@ -146,6 +147,10 @@ func (s *Store) QuarantineRestored(ctx context.Context, expected SafetyCheckpoin
 	}
 	if !matchingSafety(actual, expected) {
 		return ErrConflict
+	}
+	// 恢复后推进全库节点代次，旧节点许可即使在备份中仍未过期也不能复用。
+	if _, e = tx.ExecContext(ctx, `UPDATE keygate.runtime_cluster SET generation=generation+1 WHERE singleton`); e != nil {
+		return e
 	}
 	environment := expected.Environment
 	if _, e = tx.ExecContext(ctx, `UPDATE keygate.provider_policies SET enabled=false,revision=revision+1 WHERE environment=$1`, environment); e != nil {
