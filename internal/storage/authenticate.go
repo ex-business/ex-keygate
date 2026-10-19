@@ -9,6 +9,7 @@ import (
 	"errors"
 	"net/http"
 
+	"ex-keygate/internal/access"
 	"ex-keygate/internal/httpsign"
 	"ex-keygate/internal/keycrypto"
 )
@@ -16,6 +17,17 @@ import (
 // AuthenticateProbe 只认证直接发送给 ExKeyGate 的实际请求，不给外部业务颁发可转移授权。
 // 与停用共用域锁；最终状态校验、验签、防重放和提交在同一权威事务，数据库失败不放行。
 func (k *DevelopmentKeys) AuthenticateProbe(ctx context.Context, r *http.Request, body []byte, audience string) error {
+	return k.authenticateProbe(ctx, r, body, audience, "")
+}
+
+// AuthenticateProbeTraced 将 HTTP 适配器生成的 trace ID 绑定审计，不把客户端自报 ID 当服务端追踪标识。
+func (k *DevelopmentKeys) AuthenticateProbeTraced(ctx context.Context, r *http.Request, body []byte, audience, trace string) error {
+	if !access.ValidID(trace) {
+		return ErrInvalid
+	}
+	return k.authenticateProbe(ctx, r, body, audience, trace)
+}
+func (k *DevelopmentKeys) authenticateProbe(ctx context.Context, r *http.Request, body []byte, audience, trace string) error {
 	if r.TLS == nil || r.TLS.Version < tls.VersionTLS13 {
 		return ErrDenied
 	}
@@ -75,6 +87,13 @@ func (k *DevelopmentKeys) AuthenticateProbe(ctx context.Context, r *http.Request
 	}
 	if n != 1 {
 		return ErrDenied
+	}
+	// 可信客户端身份建立后同事务留痕；审计故障回滚 nonce，不能假报认证成功。
+	if trace == "" {
+		trace = m.RequestID
+	}
+	if e = c.audit(ctx, tx, trace, "client-"+digestBytes([]byte(m.ClientID)), "client_auth", m.ClientID, "authenticated"); e != nil {
+		return e
 	}
 	return tx.Commit()
 }

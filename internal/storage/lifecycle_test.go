@@ -16,7 +16,7 @@ func TestRotationTracking(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	op := ControlOperation{Kind: IssueKey, ClientID: "one", ExpectedRevision: cl.Revision, KeyVersion: 2, RotationOf: 1, RootID: f.k.rootID, RecipientPublicKey: f.encoded, RecipientFingerprint: f.fingerprint, RecipientSigningKey: f.signingKey, RecipientSigningFingerprint: f.signingFingerprint, NotAfter: time.Now().Add(time.Hour).UTC().Format("2006-01-02T15:04:05.000Z")}
+	op := ControlOperation{Kind: IssueKey, ClientID: "one", ExpectedRevision: cl.Revision, KeyVersion: 2, RotationOf: 1, RotationReason: "scheduled", RootID: f.k.rootID, RecipientPublicKey: f.encoded, RecipientFingerprint: f.fingerprint, RecipientSigningKey: f.signingKey, RecipientSigningFingerprint: f.signingFingerprint, NotAfter: time.Now().Add(time.Hour).UTC().Format("2006-01-02T15:04:05.000Z")}
 	r, e = f.f.c.Submit(ctx, f.f.tokens[0], op, unique(t), unique(t))
 	if e != nil {
 		t.Fatal(e)
@@ -29,6 +29,7 @@ func TestRotationTracking(t *testing.T) {
 	cl, _ = f.f.c.Client(ctx, f.f.tokens[0], "one")
 	bypass := op
 	bypass.RotationOf = 0
+	bypass.RotationReason = ""
 	bypass.KeyVersion = 3
 	bypass.ExpectedRevision = cl.Revision
 	if _, e = f.f.c.Submit(ctx, f.f.tokens[0], bypass, unique(t), unique(t)); e != ErrConflict {

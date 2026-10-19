@@ -28,7 +28,7 @@
 <p>隔离恢复时填写同一恢复 ID、事件 ID 和证据 SHA-256；客户端须已停用。准备与正式恢复分别审批。</p>
 <label>恢复 ID <input name="recoveryId" maxlength="128"></label><label>事件 ID <input name="incidentId" maxlength="128"></label><label>证据摘要 <input name="evidenceHash" maxlength="64"></label>
 <button>提交操作申请</button>
-<p><label>轮换来源版本（普通签发留空）<input name="rotationOf" type="number" min="1"></label></p>
+<p><label>轮换来源版本（普通签发留空）<input name="rotationOf" type="number" min="1"><select name="rotationReason"><option value="scheduled">例行轮换</option><option value="expiry">即将到期</option><option value="manual">人工轮换</option></select></label></p>
 <button id="lifecycle-status" type="button">查看版本、轮换及到期提醒</button>
 <button id="lifecycle-maintain" type="button">收尾已到期任务</button>
 <button id="key-status" type="button">查询密钥状态</button>
@@ -50,7 +50,7 @@
 <pre id="key-state"></pre>
 <h2>审计</h2>
 <p>仅 auditor 可访问。模拟 demo-requester 显式授予开发审计权限。范围留空表示全域；导出是最多 5000 条的 JSONL 快照，十分钟过期，下载会再次核验近期登录和权限。</p>
-<form id="audit"><label>客户端范围 <input name="clientId"></label><label>起始序号 <input name="after" value="0" type="number" min="0"></label><button name="mode" value="query">查询最近一天（100 条）</button><button name="mode" value="export">创建最近一天快照</button></form>
+<form id="audit"><label>客户端范围 <input name="clientId"></label><label>操作 <input name="action"></label><label>结果 <input name="result"></label><label>请求 ID <input name="requestId"></label><label>对象 ID <input name="targetId"></label><label>起始序号 <input name="after" value="0" type="number" min="0"></label><button name="mode" value="query">查询最近一天（100 条）</button><button name="mode" value="export">创建最近一天快照</button></form>
 <button id="audit-exports" type="button">查看我的导出任务</button><button id="auth-failures" type="button">查看认证失败聚合</button>
 <form id="audit-download"><label>导出 ID <input name="id" required></label><button>下载 JSONL</button></form>
 <h2>处理结果</h2>

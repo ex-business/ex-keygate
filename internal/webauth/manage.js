@@ -93,7 +93,7 @@ document.getElementById('key-operation').addEventListener('submit', event => {
     const operation = {kind: data.get('kind'), clientId: client.id, expectedRevision: client.revision, name: '', profileId: '', profileVersion: '0', keyVersion: data.get('keyVersion')};
     if (operation.kind.startsWith('recovery_')) for (const field of ['recoveryId','incidentId','evidenceHash']) operation[field]=data.get(field);
     if (operation.kind === 'key_issue' || operation.kind === 'recovery_issue') {
-      if (data.get('rotationOf')) operation.rotationOf = data.get('rotationOf');
+      if (data.get('rotationOf')) {operation.rotationOf = data.get('rotationOf');operation.rotationReason=data.get('rotationReason');}
       const recipient = JSON.parse(data.get('recipient'));
       for (const key of ['recipientPublicKey', 'recipientFingerprint', 'recipientSigningKey', 'recipientSigningFingerprint']) {
         if (typeof recipient[key] !== 'string') throw new Error(`缺少接收方字段 ${key}`);
@@ -127,7 +127,7 @@ document.getElementById('recovery-status').addEventListener('click',()=>submit((
 document.getElementById('abort-recovery').addEventListener('submit',e=>{e.preventDefault();submit(()=>call(`/api/recoveries/${encodeURIComponent(new FormData(e.target).get('id'))}/abort`,'POST',{}));});
 document.getElementById('provision-root').addEventListener('submit',e=>{e.preventDefault();submit(()=>call('/api/requests','POST',{kind:'root_provision',clientId:'root-management',expectedRevision:'0',name:'',profileId:'',profileVersion:'0',rootId:new FormData(e.target).get('rootId')}));});
 
-document.getElementById('audit').addEventListener('submit',e=>{e.preventDefault();const d=new FormData(e.target);const exportMode=e.submitter.value==='export';submit(()=>call(exportMode?'/api/audit/exports':'/api/audit/query','POST',{clientId:d.get('clientId'),after:exportMode?'0':d.get('after'),limit:exportMode?5000:100,from:new Date(Date.now()-86400000).toISOString(),until:new Date().toISOString()}));});
+document.getElementById('audit').addEventListener('submit',e=>{e.preventDefault();const d=new FormData(e.target);const exportMode=e.submitter.value==='export';submit(()=>call(exportMode?'/api/audit/exports':'/api/audit/query','POST',{clientId:d.get('clientId'),action:d.get('action'),result:d.get('result'),requestId:d.get('requestId'),targetId:d.get('targetId'),after:exportMode?'0':d.get('after'),limit:exportMode?5000:100,from:new Date(Date.now()-86400000).toISOString(),until:new Date().toISOString()}));});
 document.getElementById('audit-exports').addEventListener('click',()=>submit(()=>call('/api/audit/exports')));
 document.getElementById('auth-failures').addEventListener('click',()=>submit(()=>call('/api/audit/auth-failures')));
 document.getElementById('audit-download').addEventListener('submit',async e=>{e.preventDefault();try{const id=new FormData(e.target).get('id');const response=await fetch(`/api/audit/exports/${encodeURIComponent(id)}`,{credentials:'same-origin'});if(!response.ok)throw new Error(`下载拒绝 ${response.status}`);const url=URL.createObjectURL(await response.blob());const link=document.createElement('a');link.href=url;link.download='keygate-audit.jsonl';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}catch(error){result.textContent=error.message;}});

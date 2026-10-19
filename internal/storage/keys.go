@@ -141,6 +141,9 @@ func (c *DevelopmentControl) validateKeyOperation(ctx context.Context, tx *sql.T
 			return ErrConflict
 		}
 		if op.RotationOf != 0 {
+			if op.RotationReason != "scheduled" && op.RotationReason != "expiry" && op.RotationReason != "manual" {
+				return ErrInvalid
+			}
 			var valid bool
 			if e := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM keygate.key_versions WHERE environment=$1 AND client_id=$2 AND version=$3 AND state='active' AND not_after>clock_timestamp()) AND NOT EXISTS(SELECT 1 FROM keygate.rotation_tasks WHERE environment=$1 AND client_id=$2 AND state IN ('preparing','overlap'))`, c.environment, op.ClientID, op.RotationOf).Scan(&valid); e != nil {
 				return e
@@ -381,7 +384,7 @@ func (c *DevelopmentControl) applyKeyOperation(ctx context.Context, tx *sql.Tx, 
 			}
 		}
 		if op.RotationOf != 0 {
-			if _, e = tx.ExecContext(ctx, `INSERT INTO keygate.rotation_tasks(environment,client_id,issue_id,old_version,new_version) VALUES($1,$2,$3,$4,$5)`, c.environment, op.ClientID, m.RequestID, op.RotationOf, op.KeyVersion); e != nil {
+			if _, e = tx.ExecContext(ctx, `INSERT INTO keygate.rotation_tasks(environment,client_id,issue_id,old_version,new_version,reason) VALUES($1,$2,$3,$4,$5,$6)`, c.environment, op.ClientID, m.RequestID, op.RotationOf, op.KeyVersion, op.RotationReason); e != nil {
 				return e
 			}
 		}

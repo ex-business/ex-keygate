@@ -10,11 +10,15 @@ import (
 )
 
 type AuditFilter struct {
-	ClientID string    `json:"clientId"`
-	After    int64     `json:"after,string"`
-	Limit    int       `json:"limit"`
-	From     time.Time `json:"from"`
-	Until    time.Time `json:"until"`
+	Action    string    `json:"action"`
+	Result    string    `json:"result"`
+	RequestID string    `json:"requestId"`
+	TargetID  string    `json:"targetId"`
+	ClientID  string    `json:"clientId"`
+	After     int64     `json:"after,string"`
+	Limit     int       `json:"limit"`
+	From      time.Time `json:"from"`
+	Until     time.Time `json:"until"`
 }
 type AuditEvent struct {
 	Sequence    int64     `json:"sequence,string"`
@@ -30,6 +34,11 @@ type AuditEvent struct {
 }
 
 func validAuditFilter(f AuditFilter, max int) bool {
+	for _, id := range []string{f.Action, f.Result, f.RequestID, f.TargetID} {
+		if id != "" && !access.ValidID(id) {
+			return false
+		}
+	}
 	return (f.ClientID == "" || access.ValidID(f.ClientID)) && f.After >= 0 && f.Limit > 0 && f.Limit <= max && !f.From.IsZero() && f.Until.After(f.From) && f.Until.Sub(f.From) <= 31*24*time.Hour
 }
 
@@ -38,7 +47,7 @@ func (c *DevelopmentControl) auditRows(ctx context.Context, tx *sql.Tx, actor st
 	if !c.has(ctx, tx, actor, access.Auditor, f.ClientID) {
 		return nil, ErrDenied
 	}
-	rows, e := tx.QueryContext(ctx, `SELECT a.sequence,a.event_id,s.environment,s.client_id,a.request_id,a.actor_id,a.action,a.target_id,a.result,a.created_at FROM keygate.audit_events a JOIN keygate.scoped_audit s ON s.event_id=a.event_id WHERE s.environment=$1 AND ($2='' OR s.client_id=$2) AND a.sequence>$3 AND a.created_at>=$4 AND a.created_at<$5 ORDER BY a.sequence LIMIT $6`, c.environment, f.ClientID, f.After, f.From, f.Until, f.Limit)
+	rows, e := tx.QueryContext(ctx, `SELECT a.sequence,a.event_id,s.environment,s.client_id,a.request_id,a.actor_id,a.action,a.target_id,a.result,a.created_at FROM keygate.audit_events a JOIN keygate.scoped_audit s ON s.event_id=a.event_id WHERE s.environment=$1 AND ($2='' OR s.client_id=$2) AND a.sequence>$3 AND a.created_at>=$4 AND a.created_at<$5 AND ($7='' OR a.action=$7) AND ($8='' OR a.result=$8) AND ($9='' OR a.request_id=$9) AND ($10='' OR a.target_id=$10) ORDER BY a.sequence LIMIT $6`, c.environment, f.ClientID, f.After, f.From, f.Until, f.Limit, f.Action, f.Result, f.RequestID, f.TargetID)
 	if e != nil {
 		return nil, e
 	}
@@ -77,6 +86,7 @@ func (c *DevelopmentControl) AuditQuery(ctx context.Context, token string, f Aud
 }
 
 type AuditExport struct {
+	Filter               AuditFilter
 	ID, State, Digest    string
 	Count                int
 	CreatedAt, ExpiresAt time.Time
@@ -110,6 +120,7 @@ func (c *DevelopmentControl) ExportAudit(ctx context.Context, token string, f Au
 	if total >= 100 || mine >= 10 {
 		return AuditExport{}, ErrConflict
 	}
+	requestedFilter := f
 	f.Limit++
 	// 多读一行拒绝截断导出；不能把遗漏事件的局部结果标为完整快照。
 	rows, e := c.auditRows(ctx, tx, a.id, f)
@@ -133,8 +144,12 @@ func (c *DevelopmentControl) ExportAudit(ctx context.Context, token string, f Au
 	if e != nil {
 		return AuditExport{}, e
 	}
-	out := AuditExport{ID: id, State: "ready", Digest: digestBytes(payload.Bytes()), Count: len(rows)}
-	if e = tx.QueryRowContext(ctx, `INSERT INTO keygate.audit_exports(environment,export_id,principal_id,client_id,payload,digest,event_count) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING created_at,expires_at`, c.environment, id, a.id, f.ClientID, payload.Bytes(), out.Digest, out.Count).Scan(&out.CreatedAt, &out.ExpiresAt); e != nil {
+	out := AuditExport{ID: id, State: "ready", Digest: digestBytes(payload.Bytes()), Count: len(rows), Filter: requestedFilter}
+	filters, e := json.Marshal(requestedFilter)
+	if e != nil {
+		return AuditExport{}, e
+	}
+	if e = tx.QueryRowContext(ctx, `INSERT INTO keygate.audit_exports(environment,export_id,principal_id,client_id,payload,digest,event_count,filters) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING created_at,expires_at`, c.environment, id, a.id, f.ClientID, payload.Bytes(), out.Digest, out.Count, string(filters)).Scan(&out.CreatedAt, &out.ExpiresAt); e != nil {
 		return AuditExport{}, e
 	}
 	if e = c.audit(ctx, tx, trace, a.id, "audit_export", id, "ready"); e != nil {
@@ -189,7 +204,7 @@ func (c *DevelopmentControl) AuditExports(ctx context.Context, token string) ([]
 	if e != nil {
 		return nil, e
 	}
-	rows, e := tx.QueryContext(ctx, `SELECT x.export_id,x.client_id,x.digest,x.event_count,x.created_at,x.expires_at,CASE WHEN x.expires_at>clock_timestamp() THEN 'ready' ELSE 'expired' END FROM keygate.audit_exports x WHERE x.environment=$1 AND x.principal_id=$2 AND EXISTS(SELECT 1 FROM keygate.role_grants g WHERE g.environment=x.environment AND g.principal_id=$2 AND g.role='auditor' AND g.enabled AND (g.client_id='' OR g.client_id=x.client_id)) ORDER BY x.created_at DESC LIMIT 100`, c.environment, a.id)
+	rows, e := tx.QueryContext(ctx, `SELECT x.export_id,x.client_id,x.digest,x.event_count,x.created_at,x.expires_at,x.filters,CASE WHEN x.expires_at>clock_timestamp() THEN 'ready' ELSE 'expired' END FROM keygate.audit_exports x WHERE x.environment=$1 AND x.principal_id=$2 AND EXISTS(SELECT 1 FROM keygate.role_grants g WHERE g.environment=x.environment AND g.principal_id=$2 AND g.role='auditor' AND g.enabled AND (g.client_id='' OR g.client_id=x.client_id)) ORDER BY x.created_at DESC LIMIT 100`, c.environment, a.id)
 	if e != nil {
 		return nil, e
 	}
@@ -197,7 +212,12 @@ func (c *DevelopmentControl) AuditExports(ctx context.Context, token string) ([]
 	for rows.Next() {
 		var x AuditExport
 		var scope string
-		if e = rows.Scan(&x.ID, &scope, &x.Digest, &x.Count, &x.CreatedAt, &x.ExpiresAt, &x.State); e != nil {
+		var filters []byte
+		if e = rows.Scan(&x.ID, &scope, &x.Digest, &x.Count, &x.CreatedAt, &x.ExpiresAt, &filters, &x.State); e != nil {
+			rows.Close()
+			return nil, e
+		}
+		if e = json.Unmarshal(filters, &x.Filter); e != nil {
 			rows.Close()
 			return nil, e
 		}
@@ -295,7 +315,7 @@ func (c *DevelopmentControl) auditScope(ctx context.Context, tx *sql.Tx, action,
 		query = `SELECT client_id FROM keygate.recovery_tasks WHERE environment=$1 AND recovery_id=$2`
 	case "audit_export", "audit_download":
 		query = `SELECT client_id FROM keygate.audit_exports WHERE environment=$1 AND export_id=$2`
-	case "client_disable":
+	case "client_disable", "client_auth":
 		return target, nil
 	case "key_revoke":
 		query = `SELECT client_id FROM keygate.revocations WHERE environment=$1 AND incident_id=$2`

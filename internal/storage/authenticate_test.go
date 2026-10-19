@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -134,5 +135,37 @@ func TestAuthTimeAndDependencyDenials(t *testing.T) {
 				t.Fatal("authentication failed open")
 			}
 		})
+	}
+}
+
+func TestAuthenticationAuditFailureRollsBackNonce(t *testing.T) {
+	f := newKeyFixture(t)
+	ctx := context.Background()
+	r := f.issue(t, 1)
+	bundle, secret := f.claim(t, r)
+	defer clear(secret)
+	mac := hmac.New(sha256.New, secret)
+	mac.Write(bundle.PossessionInput)
+	if e := f.k.ConfirmPossession(ctx, r.ID, mac.Sum(nil), unique(t)); e != nil {
+		t.Fatal(e)
+	}
+	f.operation(t, ActivateKey, 1, "")
+	request, m := signedProbe(t, f, secret, []byte(`{}`))
+	constraint := "audit_fault_" + unique(t)
+	if _, e := f.f.db.Exec(fmt.Sprintf("ALTER TABLE keygate.audit_events ADD CONSTRAINT %s CHECK(action <> 'client_auth' OR request_id <> '%s')", constraint, m.RequestID)); e != nil {
+		t.Fatal(e)
+	}
+	defer f.f.db.Exec("ALTER TABLE keygate.audit_events DROP CONSTRAINT IF EXISTS " + constraint)
+	if e := f.k.AuthenticateProbe(ctx, request, []byte(`{}`), "keygate-probe"); e == nil {
+		t.Fatal("认证审计失败仍放行")
+	}
+	if _, e := f.f.db.Exec("ALTER TABLE keygate.audit_events DROP CONSTRAINT " + constraint); e != nil {
+		t.Fatal(e)
+	}
+	if e := f.k.AuthenticateProbe(ctx, request, []byte(`{}`), "keygate-probe"); e != nil {
+		t.Fatal("失败事务消费nonce", e)
+	}
+	if e := f.k.AuthenticateProbe(ctx, request, []byte(`{}`), "keygate-probe"); e == nil {
+		t.Fatal("重复认证")
 	}
 }

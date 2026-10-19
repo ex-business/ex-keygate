@@ -347,7 +347,7 @@ func (s *Service) flowRoutes(mux *http.ServeMux) {
 		keys, _ := f.keySnapshot()
 		e = storage.ErrDenied
 		for _, k := range keys {
-			e = k.AuthenticateProbe(r.Context(), r, body, probeAudience)
+			e = k.AuthenticateProbeTraced(r.Context(), r, body, probeAudience, requestID(r))
 			if e == nil || !errors.Is(e, storage.ErrDenied) {
 				break
 			}

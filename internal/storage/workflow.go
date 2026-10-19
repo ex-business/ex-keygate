@@ -27,6 +27,7 @@ const (
 )
 
 type ControlOperation struct {
+	RotationReason              string `json:"rotationReason,omitempty"`
 	RecoveryID                  string `json:"recoveryId,omitempty"`
 	IncidentID                  string `json:"incidentId,omitempty"`
 	EvidenceHash                string `json:"evidenceHash,omitempty"`
@@ -99,6 +100,9 @@ func (c *DevelopmentControl) eligible(ctx context.Context, tx *sql.Tx, id string
 }
 func (c *DevelopmentControl) validateOperation(ctx context.Context, tx *sql.Tx, op ControlOperation) error {
 	if !access.ValidID(op.ClientID) || op.ExpectedRevision > 9007199254740991 {
+		return ErrInvalid
+	}
+	if op.RotationReason != "" && (op.Kind != IssueKey || op.RotationOf == 0) {
 		return ErrInvalid
 	}
 	if op.Kind != RecoverIssue && op.Kind != RecoverActivate && (op.RecoveryID != "" || op.IncidentID != "" || op.EvidenceHash != "") {

@@ -128,6 +128,10 @@ func (s *Store) QuarantineRestored(ctx context.Context, expected SafetyCheckpoin
 		return e
 	}
 	defer tx.Rollback()
+	// 与显式迁移共用排他运维锁，避免恢复锁表与迁移 DDL 的锁顺序交叉。
+	if _, e = tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(610847122)`); e != nil {
+		return e
+	}
 	// 固定表清单阻止核对与隔离之间的写竞争；在线运行会等待/失败，不能绕过隔离维护步骤。
 	for _, table := range checkpointTables {
 		if _, e = tx.ExecContext(ctx, `LOCK TABLE keygate.`+table.name+` IN SHARE ROW EXCLUSIVE MODE`); e != nil {

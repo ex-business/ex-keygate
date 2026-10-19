@@ -7,6 +7,7 @@ import (
 )
 
 type LifecycleKey struct {
+	RotationReason             string
 	OriginalExpiryKnown        bool
 	Version                    uint64
 	State                      string
@@ -33,14 +34,14 @@ func (c *DevelopmentControl) Lifecycle(ctx context.Context, token, client string
 	if !c.has(ctx, tx, a.id, access.Viewer, client) {
 		return nil, ErrDenied
 	}
-	rows, e := tx.QueryContext(ctx, `SELECT k.version,CASE WHEN k.state IN ('pending','staged','active','retiring') AND k.not_after<=clock_timestamp() THEN 'expired' ELSE k.state END,k.not_after,k.original_not_after,k.original_expiry_known,k.retire_at,COALESCE(t.issue_id,''),COALESCE(t.state,''),k.state='active' AND k.not_after>clock_timestamp() AND k.not_after<=clock_timestamp()+interval '15 minutes' FROM keygate.key_versions k LEFT JOIN keygate.rotation_tasks t ON t.environment=k.environment AND t.client_id=k.client_id AND t.new_version=k.version WHERE k.environment=$1 AND k.client_id=$2 ORDER BY k.version DESC LIMIT 100`, c.environment, client)
+	rows, e := tx.QueryContext(ctx, `SELECT k.version,CASE WHEN k.state IN ('pending','staged','active','retiring') AND k.not_after<=clock_timestamp() THEN 'expired' ELSE k.state END,k.not_after,k.original_not_after,k.original_expiry_known,k.retire_at,COALESCE(t.issue_id,''),COALESCE(t.state,''),COALESCE(t.reason,''),k.state='active' AND k.not_after>clock_timestamp() AND k.not_after<=clock_timestamp()+interval '15 minutes' FROM keygate.key_versions k LEFT JOIN keygate.rotation_tasks t ON t.environment=k.environment AND t.client_id=k.client_id AND t.new_version=k.version WHERE k.environment=$1 AND k.client_id=$2 ORDER BY k.version DESC LIMIT 100`, c.environment, client)
 	if e != nil {
 		return nil, e
 	}
 	out := []LifecycleKey{}
 	for rows.Next() {
 		var k LifecycleKey
-		if e = rows.Scan(&k.Version, &k.State, &k.NotAfter, &k.OriginalNotAfter, &k.OriginalExpiryKnown, &k.RetireAt, &k.RotationID, &k.RotationState, &k.Reminder); e != nil {
+		if e = rows.Scan(&k.Version, &k.State, &k.NotAfter, &k.OriginalNotAfter, &k.OriginalExpiryKnown, &k.RetireAt, &k.RotationID, &k.RotationState, &k.RotationReason, &k.Reminder); e != nil {
 			rows.Close()
 			return nil, e
 		}

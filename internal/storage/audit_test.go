@@ -49,7 +49,10 @@ func TestAuditScopesSnapshotAndRevocation(t *testing.T) {
 			t.Fatal("混入其他范围", row)
 		}
 	}
-	out, e := f.c.ExportAudit(ctx, f.tokens[4], auditFilter("one"), unique(t))
+	filter := auditFilter("one")
+	filter.Action = "control_submit"
+	filter.Result = "pending"
+	out, e := f.c.ExportAudit(ctx, f.tokens[4], filter, unique(t))
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -67,8 +70,14 @@ func TestAuditScopesSnapshotAndRevocation(t *testing.T) {
 		t.Fatal("其他审计人下载私有导出")
 	}
 	list, e := f.c.AuditExports(ctx, f.tokens[4])
-	if e != nil || len(list) != 1 {
+	if e != nil || len(list) != 1 || list[0].Filter.Action != "control_submit" {
 		t.Fatal(list, e)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		var event AuditEvent
+		if e = json.Unmarshal([]byte(line), &event); e != nil || event.Action != "control_submit" || event.Result != "pending" {
+			t.Fatal("筛选条件未冻结", event, e)
+		}
 	}
 	for _, forbidden := range []string{"ciphertext", "token", "recipientPublicKey", "nonce", "cookie"} {
 		if strings.Contains(string(raw), forbidden) {
@@ -137,7 +146,11 @@ func TestAuditOutboxAndFailureAggregation(t *testing.T) {
 	}
 	grantAuditor(t, f, 0, "")
 	buckets, e := f.c.AuthFailures(ctx, f.tokens[0])
-	if e != nil || len(buckets) != 1 || buckets[0].Attempts != 3 {
+	sum := int64(0)
+	for _, bucket := range buckets {
+		sum += bucket.Attempts
+	}
+	if e != nil || sum != 3 {
 		t.Fatal(buckets, e)
 	}
 	if e = f.c.RecordAuthFailure(ctx, "attacker-client", unique(t)); !errors.Is(e, ErrInvalid) {
