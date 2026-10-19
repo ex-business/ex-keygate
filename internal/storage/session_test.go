@@ -18,7 +18,7 @@ func loginFixture(t *testing.T) (LoginState, Audit) {
 	state := sha256.Sum256([]byte(unique(t)))
 	browser := sha256.Sum256([]byte(unique(t)))
 	profile := sha256.Sum256([]byte(unique(t)))
-	return LoginState{state, browser, hex.EncodeToString(profile[:]), base64.RawURLEncoding.EncodeToString(browser[:]), []byte("encrypted-verifier")}, Audit{unique(t), "request", "anonymous", "login_create", hex.EncodeToString(state[:]), "pending"}
+	return LoginState{StateHash: state, BrowserHash: browser, ProfileHash: hex.EncodeToString(profile[:]), Nonce: base64.RawURLEncoding.EncodeToString(browser[:]), VerifierCipher: []byte("encrypted-verifier")}, Audit{unique(t), "request", "anonymous", "login_create", hex.EncodeToString(state[:]), "pending"}
 }
 func TestAtomicBrowserBoundLogin(t *testing.T) {
 	s, db := database(t)

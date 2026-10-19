@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"time"
 )
@@ -12,7 +13,18 @@ import (
 var ErrLogin = errors.New("login transaction unavailable")
 var ErrSession = errors.New("session unavailable")
 
+type BrowserLoginContext struct {
+	Environment string `json:"environment"`
+	ClientID    string `json:"clientId"`
+	Revision    uint64 `json:"revision,string"`
+}
+
+func (b BrowserLoginContext) valid() bool {
+	return identifier.MatchString(b.Environment) && identifier.MatchString(b.ClientID) && b.Revision > 0
+}
+
 type LoginState struct {
+	BrowserContext *BrowserLoginContext
 	StateHash      [32]byte
 	BrowserHash    [32]byte
 	ProfileHash    string
@@ -35,12 +47,19 @@ func (s *Store) CreateLogin(ctx context.Context, state LoginState, a Audit) erro
 	if !nonzero(state.StateHash) || !nonzero(state.BrowserHash) || !validDigest(state.ProfileHash) || !validNonce(state.Nonce) || len(state.VerifierCipher) == 0 || len(state.VerifierCipher) > 4096 || !a.valid() || a.ActorID != "anonymous" || a.Action != "login_create" || a.Result != "pending" || a.TargetID != hex.EncodeToString(state.StateHash[:]) {
 		return ErrInvalid
 	}
+	var browserRaw []byte
+	if state.BrowserContext != nil {
+		if !state.BrowserContext.valid() {
+			return ErrInvalid
+		}
+		browserRaw, _ = json.Marshal(state.BrowserContext)
+	}
 	tx, err := s.beginRuntime(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	_, err = tx.ExecContext(ctx, `INSERT INTO keygate.login_states(state_hash,browser_hash,profile_hash,nonce,verifier_cipher) VALUES($1,$2,$3,$4,$5)`, state.StateHash[:], state.BrowserHash[:], state.ProfileHash, state.Nonce, state.VerifierCipher)
+	_, err = tx.ExecContext(ctx, `INSERT INTO keygate.login_states(state_hash,browser_hash,profile_hash,nonce,verifier_cipher,browser_context) VALUES($1,$2,$3,$4,$5,$6)`, state.StateHash[:], state.BrowserHash[:], state.ProfileHash, state.Nonce, state.VerifierCipher, browserRaw)
 	if err != nil {
 		return err
 	}
@@ -62,12 +81,20 @@ func (s *Store) ConsumeLogin(ctx context.Context, stateHash, browserHash [32]byt
 	}
 	defer tx.Rollback()
 	state := LoginState{StateHash: stateHash, BrowserHash: browserHash, ProfileHash: profile}
-	err = tx.QueryRowContext(ctx, `DELETE FROM keygate.login_states WHERE state_hash=$1 AND browser_hash=$2 AND profile_hash=$3 AND expires_at>clock_timestamp() RETURNING nonce,verifier_cipher`, stateHash[:], browserHash[:], profile).Scan(&state.Nonce, &state.VerifierCipher)
+	var browserRaw []byte
+	err = tx.QueryRowContext(ctx, `DELETE FROM keygate.login_states WHERE state_hash=$1 AND browser_hash=$2 AND profile_hash=$3 AND expires_at>clock_timestamp() RETURNING nonce,verifier_cipher,browser_context`, stateHash[:], browserHash[:], profile).Scan(&state.Nonce, &state.VerifierCipher, &browserRaw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return LoginState{}, ErrLogin
 	}
 	if err != nil {
 		return LoginState{}, err
+	}
+	if len(browserRaw) > 0 {
+		var b BrowserLoginContext
+		if len(browserRaw) > 2048 || json.Unmarshal(browserRaw, &b) != nil || !b.valid() {
+			return LoginState{}, ErrInvalid
+		}
+		state.BrowserContext = &b
 	}
 	if !validNonce(state.Nonce) || len(state.VerifierCipher) == 0 || len(state.VerifierCipher) > 4096 {
 		return LoginState{}, ErrInvalid
@@ -97,8 +124,21 @@ func (s *Store) CreateSession(ctx context.Context, hash [32]byte, profile, princ
 		return Session{}, err
 	}
 	defer tx.Rollback()
+	session, err := createSessionInTransaction(ctx, tx, hash, profile, principal, auth, a)
+	if err != nil {
+		return Session{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return Session{}, err
+	}
+	return session, nil
+}
+func createSessionInTransaction(ctx context.Context, tx *sql.Tx, hash [32]byte, profile, principal string, auth time.Time, a Audit) (Session, error) {
+	if !nonzero(hash) || !validDigest(profile) || !identifier.MatchString(principal) || auth.IsZero() || !a.valid() || a.ActorID != principal || a.Action != "session_create" || a.Result != "success" || a.TargetID != hex.EncodeToString(hash[:]) {
+		return Session{}, ErrInvalid
+	}
 	var session Session
-	err = tx.QueryRowContext(ctx, `INSERT INTO keygate.sessions(token_hash,principal_id,authenticated_at,expires_at,profile_hash)
+	err := tx.QueryRowContext(ctx, `INSERT INTO keygate.sessions(token_hash,principal_id,authenticated_at,expires_at,profile_hash)
  SELECT $1,$2,$3,LEAST($3::timestamptz+interval '5 minutes',clock_timestamp()+interval '5 minutes'),$4
  WHERE $3::timestamptz <= clock_timestamp()+interval '30 seconds' AND $3::timestamptz > clock_timestamp()-interval '5 minutes'
  RETURNING principal_id,authenticated_at,expires_at`, hash[:], principal, auth, profile).Scan(&session.PrincipalID, &session.AuthenticatedAt, &session.ExpiresAt)
@@ -109,9 +149,6 @@ func (s *Store) CreateSession(ctx context.Context, hash [32]byte, profile, princ
 		return Session{}, err
 	}
 	if err = appendAudit(ctx, tx, a); err != nil {
-		return Session{}, err
-	}
-	if err = tx.Commit(); err != nil {
 		return Session{}, err
 	}
 	return session, nil

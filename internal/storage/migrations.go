@@ -39,12 +39,15 @@ var providersSchema string
 //go:embed cluster_schema.sql
 var clusterSchema string
 
+//go:embed browser_schema.sql
+var browserSchema string
+
 // migrateControl 使用编号和校验和拒绝已应用迁移被静默修改；不自动降级。
 func migrateControl(ctx context.Context, tx *sql.Tx) error {
 	for _, m := range []struct {
 		version int
 		body    string
-	}{{1, controlSchema}, {2, workflowSchema}, {3, keysSchema}, {4, lifecycleSchema}, {5, revocationSchema}, {6, recoverySchema}, {7, auditSchema}, {8, auditRefinementsSchema}, {9, providersSchema}, {10, clusterSchema}} {
+	}{{1, controlSchema}, {2, workflowSchema}, {3, keysSchema}, {4, lifecycleSchema}, {5, revocationSchema}, {6, recoverySchema}, {7, auditSchema}, {8, auditRefinementsSchema}, {9, providersSchema}, {10, clusterSchema}, {11, browserSchema}} {
 		hash := sha256.Sum256([]byte(m.body))
 		checksum := hex.EncodeToString(hash[:])
 		var existing string

@@ -315,7 +315,7 @@ func (c *DevelopmentControl) auditScope(ctx context.Context, tx *sql.Tx, action,
 		query = `SELECT client_id FROM keygate.recovery_tasks WHERE environment=$1 AND recovery_id=$2`
 	case "audit_export", "audit_download":
 		query = `SELECT client_id FROM keygate.audit_exports WHERE environment=$1 AND export_id=$2`
-	case "client_disable", "client_auth":
+	case "client_disable", "client_auth", "browser_session_create", "browser_auth", "browser_logout":
 		return target, nil
 	case "key_revoke":
 		query = `SELECT client_id FROM keygate.revocations WHERE environment=$1 AND incident_id=$2`
