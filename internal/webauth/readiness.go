@@ -20,6 +20,18 @@ func (s *Service) AttachSimulatedNode(ctx context.Context, environment string, r
 	if s.handlerStarted.Load() || s.flow != nil || !s.config.Identity.DevelopmentMode || s.config.Identity.ClientID != mocksso.ClientID || len(roots) == 0 || len(roots) > 128 {
 		return ErrConfig
 	}
+	return s.attachAuthorizedNode(ctx, environment, roots)
+}
+
+// AttachOIDCManagement 只挂接受控离线初始化的安全域，不按 SSO 的 roles/groups 自动创建人员或授权。
+// 当前仍限开发/测试软件根；真实身份接入不代表生产托管与基础设施验收已经通过。
+func (s *Service) AttachOIDCManagement(ctx context.Context, environment string, roots []DevelopmentRoot) error {
+	if s.handlerStarted.Load() || s.flow != nil || s.config.Identity.DevelopmentMode || len(roots) == 0 || len(roots) > 128 {
+		return ErrConfig
+	}
+	return s.attachAuthorizedNode(ctx, environment, roots)
+}
+func (s *Service) attachAuthorizedNode(ctx context.Context, environment string, roots []DevelopmentRoot) error {
 	c, e := storage.NewDevelopmentControl(s.config.Environment, environment, s.profile, s.store)
 	if e != nil {
 		return e
@@ -48,7 +60,7 @@ func (s *Service) AttachSimulatedNode(ctx context.Context, environment string, r
 		s.flow = nil
 		return e
 	}
-	s.logger.InfoContext(ctx, "节点已加入已有开发安全域，未重新初始化权限", "environment", environment, "result", "attached")
+	s.logger.InfoContext(ctx, "节点已挂接已有授权域，未创建人员或重新初始化权限", "environment", environment, "result", "attached")
 	return nil
 }
 

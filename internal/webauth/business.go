@@ -159,6 +159,7 @@ func (s *Service) flowRoutes(mux *http.ServeMux) {
 			next(w, r)
 		})
 	}
+	s.nativeMFARoutes(handle)
 	s.browserRoutes(handle)
 	s.providerRoutes(handle)
 	s.lifecycleRoutes(handle)
@@ -260,6 +261,26 @@ func (s *Service) flowRoutes(mux *http.ServeMux) {
 			return
 		}
 		businessJSON(w, 201, out)
+	})
+	handle("POST /api/requests/{id}/skip", func(w http.ResponseWriter, r *http.Request) {
+		token, ok := s.businessSession(w, r, true)
+		if !ok {
+			return
+		}
+		var body struct {
+			Digest string `json:"digest"`
+			Reason string `json:"reason"`
+		}
+		if e := strictJSON(w, r, &body); e != nil {
+			s.businessError(w, r, e)
+			return
+		}
+		out, e := s.flow.control.SkipSequential(r.Context(), token, r.PathValue("id"), body.Digest, body.Reason, requestID(r))
+		if e != nil {
+			s.businessError(w, r, e)
+			return
+		}
+		businessJSON(w, 200, out)
 	})
 	handle("POST /api/requests/{id}/votes", func(w http.ResponseWriter, r *http.Request) {
 		token, ok := s.businessSession(w, r, true)

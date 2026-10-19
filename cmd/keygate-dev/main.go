@@ -30,8 +30,10 @@ import (
 	"ex-keygate/internal/identity"
 	"ex-keygate/internal/keycrypto"
 	"ex-keygate/internal/keyservice"
+	"ex-keygate/internal/mfa"
 	"ex-keygate/internal/storage"
 	"ex-keygate/internal/webauth"
+	"ex-keygate/provider"
 )
 
 func main() {
@@ -41,13 +43,16 @@ func main() {
 	}
 }
 func run() error {
+	mfaConfigFile := flag.String("mfa-config-file", "", "受控离线MFA绑定与人员流转配置（私有文件）")
+	mfaPluginsFile := flag.String("mfa-plugins-file", "", "MFA邮件/短信/硬件mTLS插件配置（私有文件）")
 	resumeEnvironment := flag.String("resume-environment", "", "显式恢复已隔离的开发管理域")
 	resumeCheckpoint := flag.String("resume-checkpoint", "", "隔离后最新的独立签名状态校验点")
 	resumePublicKey := flag.String("resume-public-key", "", "独立固定的可信校验公钥文件")
 	enableFlow := flag.Bool("enable-key-flow", false, "Enable simulated development-only client/key workflow")
 	port := flag.Int("port", 18761, "Loopback console TLS port")
 	databaseFile := flag.String("database-file", "data/dev-console/database-url", "Private disposable development database URL file")
-	ssoFile := flag.String("sso-file", "data/mock-sso/connection.json", "Development mock SSO connection metadata")
+	ssoFile := flag.String("sso-file", "data/mock-sso/connection.json", "可信 OIDC/SSO 连接配置（默认使用本机模拟配置）")
+	ssoSecretFile := flag.String("sso-secret-file", "", "可选 OIDC confidential client 私有密钥文件（0600）")
 	output := flag.String("output", "data/dev-console", "Private directory for public console CA and metadata")
 	pluginFile := flag.String("plugin-file", "", "受信的私有开发插件连接配置文件")
 	flag.Parse()
@@ -58,17 +63,26 @@ func run() error {
 	if (cfg.Environment != config.Development && cfg.Environment != config.Test) || cfg.RootMode != config.DevelopmentSoftware {
 		return errors.New("development console requires a development/test environment and development_software root mode")
 	}
-	var sso struct {
-		DevelopmentOnly                                                                      bool
-		Issuer, JWKSURL, AuthorizationEndpoint, TokenEndpoint, ClientID, RedirectURI, CAFile string
-		AllowedACR                                                                           []string
-	}
 	raw, err := os.ReadFile(*ssoFile)
 	if err != nil {
-		return errors.New("mock SSO connection metadata unavailable")
+		return errors.New("SSO 连接配置不可用")
 	}
-	if len(raw) > 16384 || json.Unmarshal(raw, &sso) != nil || !sso.DevelopmentOnly {
-		return errors.New("invalid mock SSO metadata")
+	sso, err := identity.ParseConnection(raw)
+	if err != nil {
+		return errors.New("SSO 连接配置无效")
+	}
+	// 外部身份平台绝不走模拟账号初始化，防止把测试角色授予真实人员。
+	if !sso.DevelopmentOnly && (*enableFlow || *resumeEnvironment != "") {
+		return errors.New("外部 SSO 不允许模拟授权初始化或恢复；请使用受控离线授权接入")
+	}
+	secret := ""
+	if *ssoSecretFile != "" {
+		value, e := readPrivate(*ssoSecretFile)
+		if e != nil {
+			return errors.New("SSO 客户端密钥文件不可用")
+		}
+		secret = strings.TrimSuffix(strings.TrimSuffix(string(value), "\n"), "\r")
+		clear(value)
 	}
 	listener, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(*port)))
 	if err != nil {
@@ -77,15 +91,22 @@ func run() error {
 	defer listener.Close()
 	origin := "https://localhost:" + strconv.Itoa(listener.Addr().(*net.TCPAddr).Port)
 	if sso.RedirectURI != origin+"/auth/callback" {
-		return errors.New("mock SSO callback must match the localhost console callback")
+		return errors.New("SSO 回调必须精确匹配本机控制台地址")
 	}
-	ca, err := os.ReadFile(sso.CAFile)
-	if err != nil {
-		return errors.New("mock SSO CA unavailable")
+	// 真实公网 IdP 默认使用系统信任；私有 CA 只加入本连接的专用池，不修改系统证书。
+	var roots *x509.CertPool
+	if sso.CAFile != "" {
+		ca, e := os.ReadFile(sso.CAFile)
+		if e != nil {
+			return errors.New("SSO CA 文件不可用")
+		}
+		roots = x509.NewCertPool()
+		if !roots.AppendCertsFromPEM(ca) {
+			return errors.New("SSO CA 文件无效")
+		}
 	}
-	roots := x509.NewCertPool()
-	if !roots.AppendCertsFromPEM(ca) {
-		return errors.New("invalid mock SSO CA")
+	if sso.DevelopmentOnly && roots == nil {
+		return errors.New("模拟 SSO 必须显式固定测试 CA")
 	}
 	dsn, err := readPrivate(*databaseFile)
 	if err != nil {
@@ -132,7 +153,23 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	service, err := webauth.New(webauth.Config{Environment: cfg.Environment, Identity: identity.Config{DevelopmentMode: true, Issuer: sso.Issuer, JWKSURL: sso.JWKSURL, ClientID: sso.ClientID, AllowedACR: sso.AllowedACR, MaxAuthAge: 5 * time.Minute, TrustedRoots: roots}, AuthorizationEndpoint: sso.AuthorizationEndpoint, TokenEndpoint: sso.TokenEndpoint, CallbackURL: sso.RedirectURI, PolicyVersion: 1}, store, protector)
+	var mfaPlugins mfa.Plugins
+	pluginHash := ""
+	if *mfaPluginsFile != "" {
+		raw, e := readPrivate(*mfaPluginsFile)
+		if e != nil {
+			return errors.New("MFA插件配置不可用")
+		}
+		var closePlugins func()
+		mfaPlugins, pluginHash, closePlugins, e = mfa.LoadPlugins(raw)
+		if e != nil {
+			return errors.New("MFA插件配置无效")
+		}
+		defer closePlugins()
+	}
+	identityConfig := sso.IdentityConfig()
+	identityConfig.TrustedRoots = roots
+	service, err := webauth.New(webauth.Config{Environment: cfg.Environment, MFAPlugins: mfaPlugins, MFAPluginPolicyHash: pluginHash, Identity: identityConfig, TokenAuthMethod: sso.TokenAuthMethod, ClientSecret: secret, AuthorizationEndpoint: sso.AuthorizationEndpoint, TokenEndpoint: sso.TokenEndpoint, CallbackURL: sso.RedirectURI, PolicyVersion: 2}, store, protector)
 	if err != nil {
 		return errors.New("development login configuration rejected")
 	}
@@ -170,6 +207,19 @@ func run() error {
 		defer service.ClosePlugins()
 	} else if *pluginFile != "" {
 		return errors.New("插件装配必须显式开启开发流程")
+	}
+	if *mfaConfigFile != "" {
+		raw, e := readPrivate(*mfaConfigFile)
+		if e != nil {
+			return errors.New("MFA离线绑定配置不可用")
+		}
+		var plan webauth.MFAEnrollmentPlan
+		if provider.DecodeStrict(raw, &plan) != nil {
+			return errors.New("MFA离线绑定配置无效")
+		}
+		if e = service.ProvisionNativeMFAOffline(startup, plan); e != nil {
+			return errors.New("MFA离线配置失败，未开放HTTP服务")
+		}
 	}
 	cert, publicCA, err := devtls.Certificate("ExKeyGate Development Console")
 	if err != nil {

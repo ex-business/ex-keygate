@@ -7,10 +7,16 @@
 <p><a href="/h5">H5 认证与 SDK 演示</a></p>
 <p><strong>开发模拟流程：</strong>客户端管理 → 密钥申请 → 多人审批 → 启用 → 认证 → 停用</p>
 <p>模拟账号仅用于功能验证。申请人 demo-requester；审批人 demo-approver-1、demo-approver-2。每个身份使用独立浏览器会话；这不代表真实的多人身份或 MFA。</p>
-<p><a href="/auth/login">通过 SSO 登录 / 切换身份</a> · <a href="/auth/session">查看会话</a></p>
+<p><a href="/auth/login">通过 SSO 重新认证 / 切换身份</a> · <a href="/auth/session">查看会话</a></p>
 <p id="identity">正在读取会话…</p>
 <button id="refresh" type="button">刷新状态</button>
 <button id="logout" type="button">退出</button>
+<h2>本人二次验证</h2>
+<p>M-of-N 按不同人员依次流转；每人先完成自己的验证组合，再确认当前申请。验证码和会话不交给下一人。</p>
+<label>验证用途 <input id="mfa-purpose" value="management" maxlength="128"></label>
+<button id="mfa-start" type="button">开始本人验证</button>
+<p>management 用于管理会话；审批时由申请行的“验证本次申请”选择具体申请。未配置插件保持不可用。</p>
+<div id="mfa-factors"></div><pre id="mfa-state"></pre>
 <h2>认证插件与硬件接口</h2>
 <p>内部软件插件控制当前密钥闭环。第三方 HTTPS/mTLS 插件目前提供健康检查与公开向量自检，真实客户端认证接入需另行实现。硬件、KMS/HSM 仅预留接口，不能启用。</p>
 <p>启用或切换配置需要全域管理员申请及两名审批人批准；应急停用立即生效。当前配置摘要必须与获批摘要一致。</p>
@@ -46,7 +52,7 @@
 <p>撤销立即减权且不可恢复；根撤销会隔离依赖客户端。原版本即使误报也不能重新启用。</p>
 <form id="revoke"><label>事件 ID <input name="incidentId" required maxlength="128"></label><label>范围 <select name="scope"><option value="version">当前客户端及版本</option><option value="root">当前基础根及全部依赖</option></select></label><label>原因 <select name="reason"><option value="suspected_leak">疑似泄露</option><option value="confirmed_leak">确认泄露</option><option value="lost_delivery">交付丢失</option><option value="scope_unknown">影响范围未知</option></select></label><button>立即撤销</button></form>
 <h2>3. 审阅与审批</h2>
-<p>核对清单、摘要、版本和接收方指纹后投票。两名独立审批人通过后，由原申请人点击执行。领取和持有证明完成后，另行发起启用申请。</p>
+<p>核对清单、摘要、版本和接收方指纹后投票。达到冻结清单的 M 名独立审批人门槛后，由原申请人点击执行。顺序模式只允许当前人员验证并确认，随后交给下一人；同一个人不重复占票。领取和持有证明完成后，另行发起启用申请。</p>
 <div id="requests"></div>
 <h2>客户端状态</h2>
 <pre id="client-state"></pre>

@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -24,6 +25,7 @@ import (
 	"ex-keygate/internal/config"
 	"ex-keygate/internal/identity"
 	"ex-keygate/internal/keycrypto"
+	"ex-keygate/internal/mfa"
 	"ex-keygate/internal/storage"
 	"golang.org/x/oauth2"
 )
@@ -39,11 +41,15 @@ type Protector interface {
 	Open(context.Context, keycrypto.Binding, keycrypto.Envelope) ([]byte, error)
 }
 type Config struct {
+	MFAPlugins                                        mfa.Plugins `json:"-"`
+	MFAPluginPolicyHash                               string
 	BrowserReturnPaths                                map[string]string
 	Environment                                       config.Environment
 	Identity                                          identity.Config
 	AuthorizationEndpoint, TokenEndpoint, CallbackURL string
 	PolicyVersion                                     uint64
+	TokenAuthMethod                                   string
+	ClientSecret                                      string `json:"-"`
 }
 type Service struct {
 	handlerStarted  atomic.Bool
@@ -71,6 +77,16 @@ func New(c Config, store *storage.Store, protector Protector) (*Service, error) 
 		}
 	}
 	c.Identity.AllowedACR = slices.Clone(c.Identity.AllowedACR)
+	c.Identity.RequiredAMR = slices.Clone(c.Identity.RequiredAMR)
+	if c.TokenAuthMethod == "" {
+		c.TokenAuthMethod = "none"
+	}
+	if c.TokenAuthMethod != "none" && c.TokenAuthMethod != "client_secret_basic" && c.TokenAuthMethod != "client_secret_post" {
+		return nil, ErrConfig
+	}
+	if (c.TokenAuthMethod == "none" && c.ClientSecret != "") || (c.TokenAuthMethod != "none" && (c.ClientSecret == "" || len(c.ClientSecret) > 4096 || strings.ContainsAny(c.ClientSecret, "\r\n"))) {
+		return nil, ErrConfig
+	}
 	if c.Identity.TrustedRoots != nil {
 		c.Identity.TrustedRoots = c.Identity.TrustedRoots.Clone()
 	}
@@ -91,7 +107,10 @@ func New(c Config, store *storage.Store, protector Protector) (*Service, error) 
 	}
 	// 身份摘要绑定根代次和受控策略；信任根等配置变化须同步提高全部节点的 PolicyVersion。
 	// H5 返回路径也纳入摘要，避免不同节点把同一登录事务导向不同入口。
-	profileValues := []any{c.Identity.Issuer, c.Identity.JWKSURL, c.Identity.ClientID, c.Identity.AllowedACR, c.Identity.MaxAuthAge, c.AuthorizationEndpoint, c.TokenEndpoint, c.CallbackURL, c.PolicyVersion, c.Environment, protector.RootID()}
+	if (c.MFAPlugins.Email != nil || c.MFAPlugins.SMS != nil || c.MFAPlugins.Hardware != nil) && !validMFAPolicyHash(c.MFAPluginPolicyHash) {
+		return nil, ErrConfig
+	}
+	profileValues := []any{c.MFAPluginPolicyHash, "admin-fresh-login-v1", c.Identity.RequiredAMR, c.TokenAuthMethod, c.Identity.Issuer, c.Identity.JWKSURL, c.Identity.ClientID, c.Identity.AllowedACR, c.Identity.MaxAuthAge, c.AuthorizationEndpoint, c.TokenEndpoint, c.CallbackURL, c.PolicyVersion, c.Environment, protector.RootID()}
 	if len(c.BrowserReturnPaths) > 0 {
 		profileValues = append(profileValues, c.BrowserReturnPaths)
 	}
@@ -101,7 +120,11 @@ func New(c Config, store *storage.Store, protector Protector) (*Service, error) 
 	}
 	digest := sha256.Sum256(profileBytes)
 	s := &Service{logger: slog.Default(), config: c, origin: callback.Scheme + "://" + callback.Host, profile: hex.EncodeToString(digest[:]), store: store, protector: protector, verifier: verifier, client: identity.NewHTTPClient(c.Identity.TrustedRoots)}
-	s.oauth = oauth2.Config{ClientID: c.Identity.ClientID, RedirectURL: c.CallbackURL, Scopes: []string{"openid", "profile"}, Endpoint: oauth2.Endpoint{AuthURL: c.AuthorizationEndpoint, TokenURL: c.TokenEndpoint, AuthStyle: oauth2.AuthStyleInParams}}
+	authStyle := oauth2.AuthStyleInParams
+	if c.TokenAuthMethod == "client_secret_basic" {
+		authStyle = oauth2.AuthStyleInHeader
+	}
+	s.oauth = oauth2.Config{ClientSecret: c.ClientSecret, ClientID: c.Identity.ClientID, RedirectURL: c.CallbackURL, Scopes: []string{"openid", "profile"}, Endpoint: oauth2.Endpoint{AuthURL: c.AuthorizationEndpoint, TokenURL: c.TokenEndpoint, AuthStyle: authStyle}}
 	return s, nil
 }
 func safeURL(u *url.URL) bool {
@@ -225,7 +248,12 @@ func (s *Service) startLogin(w http.ResponseWriter, r *http.Request, browserCont
 		return
 	}
 	setCookie(w, loginCookie, browser, 300, http.SameSiteLaxMode)
-	target := s.oauth.AuthCodeURL(state, oauth2.S256ChallengeOption(verifier), oauth2.SetAuthURLParam("nonce", nonce), oauth2.SetAuthURLParam("acr_values", strings.Join(s.config.Identity.AllowedACR, " ")), oauth2.SetAuthURLParam("max_age", "300"))
+	// 管理入口要求身份平台重新认证；回调仍核验 auth_time，不能仅信任 prompt 请求已被执行。
+	options := []oauth2.AuthCodeOption{oauth2.S256ChallengeOption(verifier), oauth2.SetAuthURLParam("nonce", nonce), oauth2.SetAuthURLParam("acr_values", strings.Join(s.config.Identity.AllowedACR, " ")), oauth2.SetAuthURLParam("max_age", strconv.FormatInt(int64(s.config.Identity.MaxAuthAge/time.Second), 10))}
+	if browserContext == nil {
+		options = append(options, oauth2.SetAuthURLParam("prompt", "login"), oauth2.SetAuthURLParam("max_age", "0"))
+	}
+	target := s.oauth.AuthCodeURL(state, options...)
 	http.Redirect(w, r, target, 303)
 }
 func (s *Service) callback(w http.ResponseWriter, r *http.Request) {
@@ -303,6 +331,11 @@ func (s *Service) callback(w http.ResponseWriter, r *http.Request) {
 	principal, err := s.verifier.VerifyLogin(r.Context(), rawIDToken, record.Nonce)
 	if err != nil {
 		s.rejected(r, "token_verify", "identity_claims_invalid", hex.EncodeToString(stateHash[:]))
+		fail(w, 401)
+		return
+	}
+	if record.BrowserContext == nil && (record.StartedAt.IsZero() || principal.AuthenticatedAt.Before(record.StartedAt.Add(-30*time.Second))) {
+		s.rejected(r, "token_verify", "fresh_authentication_required", hex.EncodeToString(stateHash[:]))
 		fail(w, 401)
 		return
 	}

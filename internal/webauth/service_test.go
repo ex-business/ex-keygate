@@ -40,6 +40,9 @@ type testApp struct {
 func setup(t *testing.T) testApp                   { return setupFlow(t, false) }
 func setupFlow(t *testing.T, enabled bool) testApp { return setupFlowPlugin(t, enabled, "") }
 func setupFlowPlugin(t *testing.T, enabled bool, pluginPath string) testApp {
+	return setupFlowInitialized(t, enabled, pluginPath, nil, nil)
+}
+func setupFlowInitialized(t *testing.T, enabled bool, pluginPath string, configure func(*Config), initialize func(*Service)) testApp {
 	t.Helper()
 	dsn := os.Getenv("KEYGATE_TEST_DATABASE_URL")
 	if dsn == "" {
@@ -81,7 +84,11 @@ func setupFlowPlugin(t *testing.T, enabled bool, pluginPath string) testApp {
 	t.Cleanup(idp.Close)
 	roots := x509.NewCertPool()
 	roots.AddCert(idp.Certificate())
-	service, err := New(Config{Environment: config.Test, Identity: identity.Config{Issuer: idpURL, JWKSURL: idpURL + "/jwks", ClientID: mocksso.ClientID, AllowedACR: []string{mocksso.SimulatedACR}, MaxAuthAge: 5 * time.Minute, TrustedRoots: roots, DevelopmentMode: true}, AuthorizationEndpoint: idpURL + "/authorize", TokenEndpoint: idpURL + "/token", CallbackURL: consoleURL + "/auth/callback", PolicyVersion: 1}, store, protector)
+	serviceConfig := Config{Environment: config.Test, Identity: identity.Config{Issuer: idpURL, JWKSURL: idpURL + "/jwks", ClientID: mocksso.ClientID, AllowedACR: []string{mocksso.SimulatedACR}, MaxAuthAge: 5 * time.Minute, TrustedRoots: roots, DevelopmentMode: true}, AuthorizationEndpoint: idpURL + "/authorize", TokenEndpoint: idpURL + "/token", CallbackURL: consoleURL + "/auth/callback", PolicyVersion: 1}
+	if configure != nil {
+		configure(&serviceConfig)
+	}
+	service, err := New(serviceConfig, store, protector)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,6 +102,9 @@ func setupFlowPlugin(t *testing.T, enabled bool, pluginPath string) testApp {
 			t.Fatal(err)
 		}
 		t.Cleanup(service.ClosePlugins)
+	}
+	if initialize != nil {
+		initialize(service)
 	}
 	console.Config.Handler = service.Handler()
 	console.TLS = &tls.Config{MinVersion: tls.VersionTLS13}
