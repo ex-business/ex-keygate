@@ -144,3 +144,35 @@ func TestRejectUnsignedAndSharedSecretAlgorithms(t *testing.T) {
 		}
 	}
 }
+
+func TestMFAAuthenticationMethods(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		amr  any
+		ok   bool
+	}{
+		{"both", []string{"pwd", "otp"}, true},
+		{"additional", []string{"hwk", "pwd", "otp"}, true},
+		{"password", []string{"pwd"}, false},
+		{"missing", nil, false},
+		{"label-only", []string{"mfa"}, false},
+		{"wrong-type", "pwd otp", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v, key, c, n := fixture(t)
+			v.config.RequiredAMR = []string{"pwd", "otp"}
+			c["amr"] = tc.amr
+			_, e := v.VerifyLogin(context.Background(), sign(t, key, c), n)
+			if (e == nil) != tc.ok {
+				t.Fatal("unexpected MFA decision", e)
+			}
+		})
+	}
+	v, key, c, n := fixture(t)
+	v.config.RequiredAMR = []string{"pwd", "otp"}
+	c["amr"] = []string{"pwd", "otp"}
+	c["acr"] = "password"
+	if _, e := v.VerifyLogin(context.Background(), sign(t, key, c), n); e == nil {
+		t.Fatal("AMR bypassed ACR")
+	}
+}

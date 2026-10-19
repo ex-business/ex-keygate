@@ -32,6 +32,7 @@ type Config struct {
 	JWKSURL         string
 	ClientID        string
 	AllowedACR      []string
+	RequiredAMR     []string
 	MaxAuthAge      time.Duration
 }
 
@@ -44,13 +45,24 @@ func (c Config) validate() error {
 	if err != nil || !secureURL(keys) || keys.Host != issuer.Host {
 		return ErrConfig
 	}
-	if strings.TrimSpace(c.ClientID) == "" || len(c.ClientID) > 256 || c.MaxAuthAge <= 0 || c.MaxAuthAge > 5*time.Minute || len(c.AllowedACR) == 0 {
+	if strings.TrimSpace(c.ClientID) == "" || len(c.ClientID) > 256 || c.MaxAuthAge < time.Second || c.MaxAuthAge > 5*time.Minute || len(c.AllowedACR) == 0 {
 		return ErrConfig
 	}
 	for _, acr := range c.AllowedACR {
 		if strings.TrimSpace(acr) == "" || len(acr) > 256 || (strings.HasPrefix(acr, "urn:keygate:dev:") && !c.DevelopmentMode) {
 			return ErrConfig
 		}
+	}
+	// AMR 是身份平台声明的认证方式；要求全部命中配置，不能只因列表里出现 mfa 就自动放行。
+	if len(c.RequiredAMR) > 16 {
+		return ErrConfig
+	}
+	seen := map[string]bool{}
+	for _, method := range c.RequiredAMR {
+		if method == "" || len(method) > 128 || strings.ContainsAny(method, " \t\r\n") || seen[method] || (!c.DevelopmentMode && method == "mock") {
+			return ErrConfig
+		}
+		seen[method] = true
 	}
 	return nil
 }
@@ -102,6 +114,7 @@ func oidcHTTPClient() *http.Client {
 
 func newOIDC(c Config, keys oidc.KeySet, now func() time.Time) *OIDC {
 	c.AllowedACR = slices.Clone(c.AllowedACR)
+	c.RequiredAMR = slices.Clone(c.RequiredAMR)
 	return &OIDC{c, oidc.NewVerifier(c.Issuer, keys, &oidc.Config{ClientID: c.ClientID, SupportedSigningAlgs: []string{oidc.RS256, oidc.PS256, oidc.ES256}, Now: now}), now}
 }
 
@@ -110,9 +123,8 @@ type Principal struct {
 	AuthenticatedAt time.Time
 }
 
-// VerifyLogin is for a trusted authorization-code callback only. The caller must
-// validate state, use PKCE, and atomically consume the server-side login nonce
-// before creating a session. The nonce is never supplied as trusted request data.
+// VerifyLogin 只处理可信授权码回调；调用方先核验 state/PKCE 并一次性消费服务端 nonce，再建立会话。
+// nonce 不能取自未经验证的请求声明；MFA 结果必须来自签名 ID Token。
 func (v *OIDC) VerifyLogin(ctx context.Context, raw, expectedNonce string) (Principal, error) {
 	if v == nil || v.verifier == nil || len(raw) > 16384 {
 		return Principal{}, ErrIdentity
@@ -126,19 +138,24 @@ func (v *OIDC) VerifyLogin(ctx context.Context, raw, expectedNonce string) (Prin
 		return Principal{}, ErrIdentity
 	}
 	now := v.now()
-	// Reject issuer aliases, expired-at-boundary tokens, absent timestamps and long
-	// lifetimes explicitly, even if the underlying verifier has compatibility rules.
+	// 额外拒绝签发者别名、过期边界、缺失时间与过长有效期，不能因库的兼容规则而放宽认证。
 	if token.Issuer != v.config.Issuer || token.Subject == "" || len(token.Subject) > 1024 || token.IssuedAt.IsZero() || token.IssuedAt.After(now.Add(30*time.Second)) || !now.Before(token.Expiry) || !token.Expiry.After(token.IssuedAt) || token.Expiry.Sub(token.IssuedAt) > 5*time.Minute || subtle.ConstantTimeCompare([]byte(token.Nonce), []byte(expectedNonce)) != 1 {
 		return Principal{}, ErrIdentity
 	}
 	var claims struct {
-		ACR       string `json:"acr"`
-		AuthTime  int64  `json:"auth_time"`
-		AZP       string `json:"azp"`
-		NotBefore int64  `json:"nbf"`
+		ACR       string   `json:"acr"`
+		AMR       []string `json:"amr"`
+		AuthTime  int64    `json:"auth_time"`
+		AZP       string   `json:"azp"`
+		NotBefore int64    `json:"nbf"`
 	}
 	if token.Claims(&claims) != nil || !slices.Contains(v.config.AllowedACR, claims.ACR) || claims.AuthTime <= 0 {
 		return Principal{}, ErrIdentity
+	}
+	for _, required := range v.config.RequiredAMR {
+		if !slices.Contains(claims.AMR, required) {
+			return Principal{}, ErrIdentity
+		}
 	}
 	authTime := time.Unix(claims.AuthTime, 0)
 	if authTime.After(now.Add(30*time.Second)) || now.Sub(authTime) >= v.config.MaxAuthAge || authTime.After(token.IssuedAt.Add(30*time.Second)) || (claims.NotBefore > 0 && now.Before(time.Unix(claims.NotBefore, 0))) {
