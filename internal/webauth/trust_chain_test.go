@@ -33,6 +33,16 @@ func TestApplicationTrustHTTPFlow(t *testing.T) {
 		if e := s.ConfigureApplicationTrust(context.Background(), "app-test", root, statusCert, statusKey); e != nil {
 			t.Fatal(e)
 		}
+		otherRoot, otherKey, _ := trustchain.NewRoot("second-root", now)
+		otherPublic, otherStatusKey, _ := ed25519.GenerateKey(rand.Reader)
+		otherStatusCert, _ := trustchain.Issue(otherRoot, otherKey, otherPublic, "partner-test", trustchain.StatusPurpose, "trust-status", 1, now, now.Add(time.Hour))
+		if e := s.ConfigureApplicationTrust(context.Background(), "partner-test", otherRoot, otherStatusCert, otherStatusKey); e != nil {
+			t.Fatal(e)
+		}
+		if e := s.ConfigureApplicationTrust(context.Background(), "partner-test", otherRoot, otherStatusCert, otherStatusKey); e == nil {
+			t.Fatal("重复装配同一根")
+		}
+
 	})
 	// 原生验证模式登录后尚未取得管理权限，不能复用假定管理已授权的旧测试助手。
 	actors := make([]businessActor, 0, 3)
@@ -69,6 +79,14 @@ func TestApplicationTrustHTTPFlow(t *testing.T) {
 		t.Fatal("MFA前读取组织证书", status)
 	}
 	complete(0, "management")
+	status, rawCatalog := nativeHTTP(t, a, actors[0].cookie, "GET", "/api/trust/services", nil)
+	var catalog struct {
+		Roots []storage.ApplicationRoot `json:"roots"`
+	}
+	if status != 200 || json.Unmarshal(rawCatalog, &catalog) != nil || len(catalog.Roots) != 2 {
+		t.Fatal("多根目录接口错误", status)
+	}
+
 	op := storage.ControlOperation{Kind: storage.PublishTrustCertificate, ClientID: "app-server", KeyVersion: 1, TrustRootFingerprint: trustchain.Fingerprint(root), TrustCertificate: cert, TrustProof: trustchain.PossessionProof(cert, key)}
 	r := a.submitOperation(t, actors[0], op)
 	for _, who := range []int{1, 2} {

@@ -20,6 +20,7 @@ type ApplicationRoot struct {
 	Certificate []byte `json:"certificate"`
 }
 type TrustService struct {
+	RootFingerprint string `json:"rootFingerprint"`
 	ServiceID       string `json:"serviceId"`
 	Revision        uint64 `json:"revision"`
 	Version         uint64 `json:"version"`
@@ -49,7 +50,7 @@ func (c *DevelopmentControl) RegisterApplicationRootOffline(ctx context.Context,
 	if _, e = trustchain.ParseRoot(certificate, now); e != nil {
 		return ErrInvalid
 	}
-	previous, e := c.applicationRoot(ctx, tx)
+	previous, e := c.applicationRoot(ctx, tx, trustchain.Fingerprint(certificate))
 	if e == nil {
 		if previous.Fingerprint != trustchain.Fingerprint(certificate) || previous.Environment != applicationEnvironment {
 			return ErrConflict
@@ -67,9 +68,9 @@ func (c *DevelopmentControl) RegisterApplicationRootOffline(ctx context.Context,
 	}
 	return tx.Commit()
 }
-func (c *DevelopmentControl) applicationRoot(ctx context.Context, tx *sql.Tx) (ApplicationRoot, error) {
+func (c *DevelopmentControl) applicationRoot(ctx context.Context, tx *sql.Tx, fingerprint string) (ApplicationRoot, error) {
 	var r ApplicationRoot
-	e := tx.QueryRowContext(ctx, `SELECT application_environment,fingerprint,certificate FROM keygate.application_trust_roots WHERE environment=$1`, c.environment).Scan(&r.Environment, &r.Fingerprint, &r.Certificate)
+	e := tx.QueryRowContext(ctx, `SELECT application_environment,fingerprint,certificate FROM keygate.application_trust_roots WHERE environment=$1 AND fingerprint=$2`, c.environment, fingerprint).Scan(&r.Environment, &r.Fingerprint, &r.Certificate)
 	return r, e
 }
 func (c *DevelopmentControl) validateTrustOperation(ctx context.Context, tx *sql.Tx, op ControlOperation) error {
@@ -87,7 +88,7 @@ func (c *DevelopmentControl) validateTrustOperation(ctx context.Context, tx *sql
 	if !bytes.Equal(raw, zero) {
 		return ErrInvalid
 	}
-	root, e := c.applicationRoot(ctx, tx)
+	root, e := c.applicationRoot(ctx, tx, op.TrustRootFingerprint)
 	if e != nil {
 		return e
 	}
@@ -96,9 +97,14 @@ func (c *DevelopmentControl) validateTrustOperation(ctx context.Context, tx *sql
 	}
 	var revision, version uint64
 	var disabled bool
-	e = tx.QueryRowContext(ctx, `SELECT revision,active_version,disabled FROM keygate.application_trust_services WHERE environment=$1 AND service_id=$2`, c.environment, op.ClientID).Scan(&revision, &version, &disabled)
+	var boundRoot string
+	e = tx.QueryRowContext(ctx, `SELECT revision,active_version,disabled,root_fingerprint FROM keygate.application_trust_services WHERE environment=$1 AND service_id=$2`, c.environment, op.ClientID).Scan(&revision, &version, &disabled, &boundRoot)
 	if e != nil && !errors.Is(e, sql.ErrNoRows) {
 		return e
+	}
+	// 服务标识在管理域内唯一；换根必须走独立恢复，不能借普通轮换迁移信任。
+	if revision > 0 && boundRoot != op.TrustRootFingerprint {
+		return ErrConflict
 	}
 	if op.ExpectedRevision != revision {
 		return ErrConflict
@@ -131,7 +137,7 @@ func (c *DevelopmentControl) applyTrustOperation(ctx context.Context, tx *sql.Tx
 		return e
 	}
 	// 新证书发布即切换当前版本，旧版本不再获发有效状态证明，泄露恢复不保留重叠窗口。
-	if _, e := tx.ExecContext(ctx, `INSERT INTO keygate.application_trust_services(environment,service_id,revision,active_version) VALUES($1,$2,1,$3) ON CONFLICT(environment,service_id) DO UPDATE SET revision=application_trust_services.revision+1,active_version=EXCLUDED.active_version,disabled=false`, c.environment, op.ClientID, op.KeyVersion); e != nil {
+	if _, e := tx.ExecContext(ctx, `INSERT INTO keygate.application_trust_services(environment,service_id,revision,active_version,root_fingerprint) VALUES($1,$2,1,$3,$4) ON CONFLICT(environment,service_id) DO UPDATE SET revision=application_trust_services.revision+1,active_version=EXCLUDED.active_version,disabled=false`, c.environment, op.ClientID, op.KeyVersion, op.TrustRootFingerprint); e != nil {
 		return e
 	}
 	if _, e := tx.ExecContext(ctx, `UPDATE keygate.application_trust_certificates SET state='retired' WHERE environment=$1 AND service_id=$2 AND state='active'`, c.environment, op.ClientID); e != nil {
@@ -142,7 +148,7 @@ func (c *DevelopmentControl) applyTrustOperation(ctx context.Context, tx *sql.Tx
 }
 func (c *DevelopmentControl) trustService(ctx context.Context, tx *sql.Tx, id string) (TrustService, error) {
 	out := TrustService{ServiceID: id}
-	e := tx.QueryRowContext(ctx, `SELECT s.revision,s.active_version,s.disabled,c.certificate,c.fingerprint FROM keygate.application_trust_services s JOIN keygate.application_trust_certificates c ON c.environment=s.environment AND c.service_id=s.service_id AND c.version=s.active_version WHERE s.environment=$1 AND s.service_id=$2`, c.environment, id).Scan(&out.Revision, &out.Version, &out.Disabled, &out.Certificate, &out.CertificateHash)
+	e := tx.QueryRowContext(ctx, `SELECT s.revision,s.active_version,s.disabled,c.certificate,c.fingerprint,s.root_fingerprint FROM keygate.application_trust_services s JOIN keygate.application_trust_certificates c ON c.environment=s.environment AND c.service_id=s.service_id AND c.version=s.active_version WHERE s.environment=$1 AND s.service_id=$2`, c.environment, id).Scan(&out.Revision, &out.Version, &out.Disabled, &out.Certificate, &out.CertificateHash, &out.RootFingerprint)
 	return out, e
 }
 
@@ -156,11 +162,11 @@ func (c *DevelopmentControl) TrustStatusSnapshot(ctx context.Context, id, trace 
 		return ApplicationRoot{}, TrustService{}, e
 	}
 	defer tx.Rollback()
-	root, e := c.applicationRoot(ctx, tx)
-	if e != nil {
-		return root, TrustService{}, e
-	}
 	service, e := c.trustService(ctx, tx, id)
+	if e != nil {
+		return ApplicationRoot{}, service, e
+	}
+	root, e := c.applicationRoot(ctx, tx, service.RootFingerprint)
 	if e != nil {
 		return root, service, e
 	}
@@ -173,37 +179,33 @@ func (c *DevelopmentControl) TrustStatusSnapshot(ctx context.Context, id, trace 
 	}
 	return root, service, nil
 }
-func (c *DevelopmentControl) TrustServices(ctx context.Context, token string) (ApplicationRoot, []TrustService, error) {
+func (c *DevelopmentControl) TrustServices(ctx context.Context, token string) ([]ApplicationRoot, []TrustService, error) {
 	tx, e := c.begin(ctx)
 	if e != nil {
-		return ApplicationRoot{}, nil, e
+		return nil, nil, e
 	}
 	defer tx.Rollback()
 	a, e := c.actor(ctx, tx, token, false)
 	if e != nil {
-		return ApplicationRoot{}, nil, e
-	}
-	root, e := c.applicationRoot(ctx, tx)
-	if e != nil {
-		return root, nil, e
+		return nil, nil, e
 	}
 	rows, e := tx.QueryContext(ctx, `SELECT service_id FROM keygate.application_trust_services WHERE environment=$1 ORDER BY service_id LIMIT 100`, c.environment)
 	if e != nil {
-		return root, nil, e
+		return nil, nil, e
 	}
 	var ids []string
 	for rows.Next() {
 		var id string
 		if e = rows.Scan(&id); e != nil {
 			rows.Close()
-			return root, nil, e
+			return nil, nil, e
 		}
 		ids = append(ids, id)
 	}
 	e = rows.Err()
 	rows.Close()
 	if e != nil {
-		return root, nil, e
+		return nil, nil, e
 	}
 	out := []TrustService{}
 	for _, id := range ids {
@@ -212,17 +214,50 @@ func (c *DevelopmentControl) TrustServices(ctx context.Context, token string) (A
 		}
 		service, e := c.trustService(ctx, tx, id)
 		if e != nil {
-			return root, nil, e
+			return nil, nil, e
 		}
 		out = append(out, service)
 	}
 	if !c.has(ctx, tx, a.id, access.Viewer, "") && len(out) == 0 {
-		return root, nil, ErrDenied
+		return nil, nil, ErrDenied
+	}
+	// 全域查看者可见空根；范围查看者只看到有权服务关联的根，避免泄露其他业务目录。
+	allRoots := []ApplicationRoot{}
+	roots := []ApplicationRoot{}
+	rootRows, e := tx.QueryContext(ctx, `SELECT application_environment,fingerprint,certificate FROM keygate.application_trust_roots WHERE environment=$1 ORDER BY fingerprint`, c.environment)
+	if e != nil {
+		return nil, nil, e
+	}
+	for rootRows.Next() {
+		var root ApplicationRoot
+		if e = rootRows.Scan(&root.Environment, &root.Fingerprint, &root.Certificate); e != nil {
+			rootRows.Close()
+			return nil, nil, e
+		}
+		allRoots = append(allRoots, root)
+	}
+	e = rootRows.Err()
+	rootRows.Close()
+	if e != nil {
+		return nil, nil, e
+	}
+	globalViewer := c.has(ctx, tx, a.id, access.Viewer, "")
+	for _, root := range allRoots {
+		visible := globalViewer
+		for _, service := range out {
+			if service.RootFingerprint == root.Fingerprint {
+				visible = true
+				break
+			}
+		}
+		if visible {
+			roots = append(roots, root)
+		}
 	}
 	if e = tx.Commit(); e != nil {
-		return root, nil, e
+		return nil, nil, e
 	}
-	return root, out, nil
+	return roots, out, nil
 }
 
 // RevokeTrustService 仅执行应急减权，提升修订并永久撤销当前版本；重新上线必须发布更高版本并重新审批。
@@ -272,11 +307,11 @@ func (c *DevelopmentControl) IssueTrustStatus(ctx context.Context, id, trace str
 		return trustchain.Status{}, e
 	}
 	defer tx.Rollback()
-	root, e := c.applicationRoot(ctx, tx)
+	service, e := c.trustService(ctx, tx, id)
 	if e != nil {
 		return trustchain.Status{}, e
 	}
-	service, e := c.trustService(ctx, tx, id)
+	root, e := c.applicationRoot(ctx, tx, service.RootFingerprint)
 	if e != nil {
 		return trustchain.Status{}, e
 	}

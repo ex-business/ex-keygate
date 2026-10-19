@@ -17,7 +17,11 @@ type applicationTrustRuntime struct {
 
 // ConfigureApplicationTrust 仅接收公开根与专用状态密钥，绝不加载离线根私钥或业务服务端私钥。
 func (s *Service) ConfigureApplicationTrust(ctx context.Context, environment string, root, certificate []byte, key ed25519.PrivateKey) error {
-	if s.handlerStarted.Load() || s.flow == nil || s.applicationTrust != nil {
+	if s.handlerStarted.Load() || s.flow == nil {
+		return ErrConfig
+	}
+	fingerprint := trustchain.Fingerprint(root)
+	if _, exists := s.applicationTrust[fingerprint]; exists {
 		return ErrConfig
 	}
 	pub, e := trustchain.VerifyCertificate(root, certificate, environment, trustchain.StatusPurpose, "trust-status", 1, time.Now())
@@ -27,7 +31,10 @@ func (s *Service) ConfigureApplicationTrust(ctx context.Context, environment str
 	if e = s.flow.control.RegisterApplicationRootOffline(ctx, environment, root, "application-root-"+hexToken()); e != nil {
 		return e
 	}
-	s.applicationTrust = &applicationTrustRuntime{append([]byte(nil), root...), append([]byte(nil), certificate...), append(ed25519.PrivateKey(nil), key...), environment}
+	if s.applicationTrust == nil {
+		s.applicationTrust = map[string]*applicationTrustRuntime{}
+	}
+	s.applicationTrust[fingerprint] = &applicationTrustRuntime{append([]byte(nil), root...), append([]byte(nil), certificate...), append(ed25519.PrivateKey(nil), key...), environment}
 	return nil
 }
 func (s *Service) trustRoutes(handle func(string, http.HandlerFunc)) {
@@ -40,12 +47,12 @@ func (s *Service) trustRoutes(handle func(string, http.HandlerFunc)) {
 			fail(w, 404)
 			return
 		}
-		root, services, e := s.flow.control.TrustServices(r.Context(), token)
+		roots, services, e := s.flow.control.TrustServices(r.Context(), token)
 		if e != nil {
 			s.businessError(w, r, e)
 			return
 		}
-		businessJSON(w, 200, map[string]any{"root": root, "services": services, "developmentOnly": true})
+		businessJSON(w, 200, map[string]any{"roots": roots, "services": services, "developmentOnly": true})
 	})
 	handle("POST /api/trust/{service}/status", func(w http.ResponseWriter, r *http.Request) {
 		if s.applicationTrust == nil {
@@ -60,8 +67,11 @@ func (s *Service) trustRoutes(handle func(string, http.HandlerFunc)) {
 			fail(w, 400)
 			return
 		}
-		runtime := s.applicationTrust
 		out, e := s.flow.control.IssueTrustStatus(r.Context(), r.PathValue("service"), requestID(r), func(root storage.ApplicationRoot, current storage.TrustService, now time.Time) (trustchain.Status, error) {
+			runtime := s.applicationTrust[root.Fingerprint]
+			if runtime == nil {
+				return trustchain.Status{}, ErrConfig
+			}
 			if root.Fingerprint != trustchain.Fingerprint(runtime.root) || root.Environment != runtime.environment {
 				return trustchain.Status{}, ErrConfig
 			}

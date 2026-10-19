@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"ex-keygate/trustchain"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -115,7 +116,7 @@ func TestTrustStatusUsesAuthorityTimeAndCommit(t *testing.T) {
 	statusCert, _ := trustchain.Issue(root, key, pub, "app-test", trustchain.StatusPurpose, "trust-status", 1, now, now.Add(time.Hour))
 	pub, _, _ = ed25519.GenerateKey(rand.Reader)
 	cert, _ := trustchain.Issue(root, key, pub, "app-test", trustchain.ServicePurpose, "api-service", 1, now, now.Add(time.Hour))
-	if _, e := f.db.Exec(`INSERT INTO keygate.application_trust_services(environment,service_id,revision,active_version) VALUES($1,'api-service',1,1)`, f.c.environment); e != nil {
+	if _, e := f.db.Exec(`INSERT INTO keygate.application_trust_services(environment,service_id,revision,active_version,root_fingerprint) VALUES($1,'api-service',1,1,$2)`, f.c.environment, trustchain.Fingerprint(root)); e != nil {
 		t.Fatal(e)
 	}
 	if _, e := f.db.Exec(`INSERT INTO keygate.application_trust_certificates(environment,service_id,version,fingerprint,certificate,state) VALUES($1,'api-service',1,$2,$3,'active')`, f.c.environment, trustchain.Fingerprint(cert), cert); e != nil {
@@ -142,5 +143,101 @@ func TestTrustStatusUsesAuthorityTimeAndCommit(t *testing.T) {
 	})
 	if e == nil || len(proof.Signature) != 0 {
 		t.Fatal("事务未提交仍泄漏状态证明", e)
+	}
+}
+
+// 多根共享一个管理域，但业务标识、审批内容和状态证明不能跨根混用。
+func TestMultipleApplicationRootsIsolation(t *testing.T) {
+	f := nativeFixture(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	roots := make([][]byte, 3)
+	keys := make([]ed25519.PrivateKey, 3)
+	for i := range roots {
+		roots[i], keys[i], _ = trustchain.NewRoot(fmt.Sprintf("root-%d", i), now)
+		if e := f.c.RegisterApplicationRootOffline(ctx, "app-test", roots[i], unique(t)); e != nil {
+			t.Fatal(e)
+		}
+	}
+	counters := []int64{0, 0, 0}
+	complete := func(who int, purpose string) { counters[who]++; completeNative(t, f, who, purpose, counters[who]) }
+	complete(0, "management")
+	publish := func(i int, id string) {
+		pub, key, _ := ed25519.GenerateKey(rand.Reader)
+		cert, e := trustchain.Issue(roots[i], keys[i], pub, "app-test", trustchain.ServicePurpose, id, 1, now, now.Add(time.Hour))
+		if e != nil {
+			t.Fatal(e)
+		}
+		op := ControlOperation{Kind: PublishTrustCertificate, ClientID: id, KeyVersion: 1, TrustRootFingerprint: trustchain.Fingerprint(roots[i]), TrustCertificate: cert, TrustProof: trustchain.PossessionProof(cert, key)}
+		// 正确证书配错根时即使附带私钥持有证明也不能提交。
+		wrong := op
+		wrong.TrustRootFingerprint = trustchain.Fingerprint(roots[(i+1)%3])
+		if _, e = f.c.Submit(ctx, f.tokens[0], wrong, unique(t), unique(t)); e == nil {
+			t.Fatal("跨根证书被接受")
+		}
+		r, e := f.c.Submit(ctx, f.tokens[0], op, unique(t), unique(t))
+		if e != nil {
+			t.Fatal(e)
+		}
+		for _, who := range []int{1, 2} {
+			complete(who, r.ID)
+			if _, e = f.c.Vote(ctx, f.tokens[who], r.ID, r.Digest, true, unique(t)); e != nil {
+				t.Fatal(e)
+			}
+		}
+		if e = f.c.ExecuteRequested(ctx, f.tokens[0], r.ID, r.Digest, unique(t)); e != nil {
+			t.Fatal(e)
+		}
+		root, service, e := f.c.TrustStatusSnapshot(ctx, id, unique(t))
+		if e != nil || root.Fingerprint != op.TrustRootFingerprint || service.RootFingerprint != root.Fingerprint {
+			t.Fatal("状态读取选错根", e)
+		}
+		pub, statusKey, _ := ed25519.GenerateKey(rand.Reader)
+		statusCert, _ := trustchain.Issue(roots[i], keys[i], pub, "app-test", trustchain.StatusPurpose, "trust-status", 1, now, now.Add(time.Hour))
+		nonce, _ := trustchain.NewNonce()
+		proof, e := f.c.IssueTrustStatus(ctx, id, unique(t), func(root ApplicationRoot, s TrustService, at time.Time) (trustchain.Status, error) {
+			return trustchain.SignStatus(root.Certificate, statusCert, statusKey, trustchain.Status{Environment: root.Environment, ServiceID: id, Revision: s.Revision, Version: s.Version, CertificateHash: s.CertificateHash, Nonce: nonce, Audience: "app"}, at)
+		})
+		if e != nil {
+			t.Fatal(e)
+		}
+		message, _ := trustchain.SignMessage(roots[i], cert, key, "app-test", id, 1, "app", nonce, []byte("test"), time.Now())
+		v := trustchain.Verifier{Root: roots[i], Environment: "app-test", ServiceID: id, Audience: "app", State: &trustchain.MemoryState{}}
+		if e = v.Verify(message, proof, nonce, []byte("test"), time.Now()); e != nil {
+			t.Fatal(e)
+		}
+		v.Root = roots[(i+1)%3]
+		v.State = &trustchain.MemoryState{}
+		if v.Verify(message, proof, nonce, []byte("test"), time.Now()) == nil {
+			t.Fatal("其他根的客户端接受签名")
+		}
+		otherIndex := (i + 1) % 3
+		otherPub, otherPrivate, _ := ed25519.GenerateKey(rand.Reader)
+		otherCert, _ := trustchain.Issue(roots[otherIndex], keys[otherIndex], otherPub, "app-test", trustchain.ServicePurpose, id, 2, now, now.Add(time.Hour))
+		switchRoot := ControlOperation{Kind: PublishTrustCertificate, ClientID: id, KeyVersion: 2, ExpectedRevision: 1, TrustRootFingerprint: trustchain.Fingerprint(roots[otherIndex]), TrustCertificate: otherCert, TrustProof: trustchain.PossessionProof(otherCert, otherPrivate)}
+		if _, e = f.c.Submit(ctx, f.tokens[0], switchRoot, unique(t), unique(t)); !errors.Is(e, ErrConflict) {
+			t.Fatal("审批轮换允许更换根", e)
+		}
+		// 禁止经轮换或直接更新悄悄改变已登记服务的根。
+		if _, e = f.db.Exec(`UPDATE keygate.application_trust_services SET root_fingerprint=$1 WHERE environment=$2 AND service_id=$3`, trustchain.Fingerprint(roots[(i+1)%3]), f.c.environment, id); e == nil {
+			t.Fatal("数据库允许换根")
+		}
+	}
+	for i, id := range []string{"orders-api", "billing-api", "partner-api"} {
+		publish(i, id)
+	}
+	catalog, services, e := f.c.TrustServices(ctx, f.tokens[0])
+	if e != nil || len(catalog) != 3 || len(services) != 3 {
+		t.Fatal("多根目录错误", e, len(catalog), len(services))
+	}
+	if e = f.c.RevokeTrustService(ctx, f.tokens[0], "orders-api", 1, "confirmed_leak", unique(t)); e != nil {
+		t.Fatal(e)
+	}
+	_, other, e := f.c.TrustStatusSnapshot(ctx, "billing-api", unique(t))
+	if e != nil || other.Disabled || other.Revision != 1 {
+		t.Fatal("撤销波及其他根", e)
+	}
+	if _, e = f.db.Exec(`INSERT INTO keygate.application_trust_services(environment,service_id,revision,active_version) VALUES($1,'ambiguous-service',1,0)`, f.c.environment); e == nil {
+		t.Fatal("多根域隐式绑定根")
 	}
 }

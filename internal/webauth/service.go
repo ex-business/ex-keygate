@@ -52,7 +52,7 @@ type Config struct {
 	ClientSecret                                      string `json:"-"`
 }
 type Service struct {
-	applicationTrust *applicationTrustRuntime
+	applicationTrust map[string]*applicationTrustRuntime
 	localAccounts    bool
 	passwordSlots    chan struct{}
 	handlerStarted   atomic.Bool
