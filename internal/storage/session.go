@@ -90,8 +90,8 @@ type Session struct {
 
 // A session establishes identity only, never local management permissions. Its
 // absolute lifetime cannot extend beyond five minutes after the verified auth.
-func (s *Store) CreateSession(ctx context.Context, hash [32]byte, principal string, auth time.Time, a Audit) (Session, error) {
-	if !nonzero(hash) || !identifier.MatchString(principal) || auth.IsZero() || !a.valid() || a.ActorID != principal || a.Action != "session_create" || a.Result != "success" || a.TargetID != hex.EncodeToString(hash[:]) {
+func (s *Store) CreateSession(ctx context.Context, hash [32]byte, profile, principal string, auth time.Time, a Audit) (Session, error) {
+	if !nonzero(hash) || !validDigest(profile) || !identifier.MatchString(principal) || auth.IsZero() || !a.valid() || a.ActorID != principal || a.Action != "session_create" || a.Result != "success" || a.TargetID != hex.EncodeToString(hash[:]) {
 		return Session{}, ErrInvalid
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -100,10 +100,10 @@ func (s *Store) CreateSession(ctx context.Context, hash [32]byte, principal stri
 	}
 	defer tx.Rollback()
 	var session Session
-	err = tx.QueryRowContext(ctx, `INSERT INTO keygate.sessions(token_hash,principal_id,authenticated_at,expires_at)
- SELECT $1,$2,$3,LEAST($3::timestamptz+interval '5 minutes',clock_timestamp()+interval '5 minutes')
+	err = tx.QueryRowContext(ctx, `INSERT INTO keygate.sessions(token_hash,principal_id,authenticated_at,expires_at,profile_hash)
+ SELECT $1,$2,$3,LEAST($3::timestamptz+interval '5 minutes',clock_timestamp()+interval '5 minutes'),$4
  WHERE $3::timestamptz <= clock_timestamp()+interval '30 seconds' AND $3::timestamptz > clock_timestamp()-interval '5 minutes'
- RETURNING principal_id,authenticated_at,expires_at`, hash[:], principal, auth).Scan(&session.PrincipalID, &session.AuthenticatedAt, &session.ExpiresAt)
+ RETURNING principal_id,authenticated_at,expires_at`, hash[:], principal, auth, profile).Scan(&session.PrincipalID, &session.AuthenticatedAt, &session.ExpiresAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Session{}, ErrSession
 	}
@@ -118,19 +118,19 @@ func (s *Store) CreateSession(ctx context.Context, hash [32]byte, principal stri
 	}
 	return session, nil
 }
-func (s *Store) Session(ctx context.Context, hash [32]byte) (Session, error) {
-	if !nonzero(hash) {
+func (s *Store) Session(ctx context.Context, hash [32]byte, profile string) (Session, error) {
+	if !nonzero(hash) || !validDigest(profile) {
 		return Session{}, ErrSession
 	}
 	var session Session
-	err := s.db.QueryRowContext(ctx, `SELECT principal_id,authenticated_at,expires_at FROM keygate.sessions WHERE token_hash=$1 AND revoked_at IS NULL AND expires_at>clock_timestamp()`, hash[:]).Scan(&session.PrincipalID, &session.AuthenticatedAt, &session.ExpiresAt)
+	err := s.db.QueryRowContext(ctx, `SELECT principal_id,authenticated_at,expires_at FROM keygate.sessions WHERE token_hash=$1 AND profile_hash=$2 AND revoked_at IS NULL AND expires_at>clock_timestamp()`, hash[:], profile).Scan(&session.PrincipalID, &session.AuthenticatedAt, &session.ExpiresAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Session{}, ErrSession
 	}
 	return session, err
 }
-func (s *Store) RevokeSession(ctx context.Context, hash [32]byte, a Audit) error {
-	if !nonzero(hash) || !a.valid() || a.Action != "session_revoke" || a.Result != "revoked" || a.TargetID != hex.EncodeToString(hash[:]) {
+func (s *Store) RevokeSession(ctx context.Context, hash [32]byte, profile string, a Audit) error {
+	if !nonzero(hash) || !validDigest(profile) || !a.valid() || a.Action != "session_revoke" || a.Result != "revoked" || a.TargetID != hex.EncodeToString(hash[:]) {
 		return ErrInvalid
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -138,7 +138,7 @@ func (s *Store) RevokeSession(ctx context.Context, hash [32]byte, a Audit) error
 		return err
 	}
 	defer tx.Rollback()
-	result, err := tx.ExecContext(ctx, `UPDATE keygate.sessions SET revoked_at=clock_timestamp() WHERE token_hash=$1 AND principal_id=$2 AND revoked_at IS NULL`, hash[:], a.ActorID)
+	result, err := tx.ExecContext(ctx, `UPDATE keygate.sessions SET revoked_at=clock_timestamp() WHERE token_hash=$1 AND principal_id=$2 AND profile_hash=$3 AND revoked_at IS NULL`, hash[:], a.ActorID, profile)
 	if err != nil {
 		return err
 	}

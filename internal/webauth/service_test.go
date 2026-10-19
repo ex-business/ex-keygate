@@ -313,7 +313,7 @@ func TestDuplicateCookiesAndQueryRejected(t *testing.T) {
 		t.Fatal("bearer accepted as session")
 	}
 	h := sha256.Sum256([]byte("unused"))
-	if _, err = a.store.Session(context.Background(), h); err == nil {
+	if _, err = a.store.Session(context.Background(), h, a.service.profile); err == nil {
 		t.Fatal("unknown session accepted")
 	}
 }

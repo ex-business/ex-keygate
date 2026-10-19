@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS keygate.login_states (
 CREATE TABLE IF NOT EXISTS keygate.sessions (
     token_hash bytea PRIMARY KEY CHECK (octet_length(token_hash) = 32),
     principal_id text NOT NULL,
+    profile_hash text NOT NULL CHECK (length(profile_hash) = 64),
     authenticated_at timestamptz NOT NULL,
     expires_at timestamptz NOT NULL,
     revoked_at timestamptz,
@@ -47,3 +48,10 @@ CREATE TABLE IF NOT EXISTS keygate.sessions (
 );
 CREATE INDEX IF NOT EXISTS session_expiry ON keygate.sessions(expires_at);
 CREATE INDEX IF NOT EXISTS login_expiry ON keygate.login_states(expires_at);
+
+-- Older development sessions are unbound and must not survive policy upgrades.
+ALTER TABLE keygate.sessions ADD COLUMN IF NOT EXISTS profile_hash text NOT NULL
+ DEFAULT '0000000000000000000000000000000000000000000000000000000000000000';
+UPDATE keygate.sessions SET revoked_at=clock_timestamp()
+ WHERE profile_hash='0000000000000000000000000000000000000000000000000000000000000000'
+ AND revoked_at IS NULL;

@@ -268,7 +268,7 @@ func (s *Service) callback(w http.ResponseWriter, r *http.Request) {
 	}
 	sessionToken := random()
 	sessionHash := hash(sessionToken)
-	session, err := s.store.CreateSession(r.Context(), sessionHash, principal.ID, principal.AuthenticatedAt, audit(requestID, principal.ID, "session_create", hex.EncodeToString(sessionHash[:]), "success"))
+	session, err := s.store.CreateSession(r.Context(), sessionHash, s.profile, principal.ID, principal.AuthenticatedAt, audit(requestID, principal.ID, "session_create", hex.EncodeToString(sessionHash[:]), "success"))
 	if err != nil {
 		fail(w, 503)
 		return
@@ -290,7 +290,7 @@ func (s *Service) session(w http.ResponseWriter, r *http.Request) {
 		fail(w, 401)
 		return
 	}
-	session, err := s.store.Session(r.Context(), hash(token))
+	session, err := s.store.Session(r.Context(), hash(token), s.profile)
 	if err != nil {
 		fail(w, 401)
 		return
@@ -313,13 +313,13 @@ func (s *Service) logout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sessionHash := hash(token)
-	session, err := s.store.Session(r.Context(), sessionHash)
+	session, err := s.store.Session(r.Context(), sessionHash, s.profile)
 	if err != nil {
 		fail(w, 401)
 		return
 	}
 	requestID := "req-" + hexToken()
-	if err = s.store.RevokeSession(r.Context(), sessionHash, audit(requestID, session.PrincipalID, "session_revoke", hex.EncodeToString(sessionHash[:]), "revoked")); err != nil {
+	if err = s.store.RevokeSession(r.Context(), sessionHash, s.profile, audit(requestID, session.PrincipalID, "session_revoke", hex.EncodeToString(sessionHash[:]), "revoked")); err != nil {
 		fail(w, 503)
 		return
 	}

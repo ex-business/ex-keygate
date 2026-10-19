@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -77,50 +78,71 @@ func TestSessionExpiryRevocationAndAudit(t *testing.T) {
 	s, db := database(t)
 	other, _ := New(db)
 	ctx := context.Background()
+	profile := strings.Repeat("a", 64)
 	hash := sha256.Sum256([]byte(unique(t)))
 	target := hex.EncodeToString(hash[:])
 	event := unique(t)
 	a := Audit{event, "request", "operator", "session_create", target, "success"}
-	session, err := s.CreateSession(ctx, hash, "operator", time.Now().Add(-time.Minute), a)
+	session, err := s.CreateSession(ctx, hash, profile, "operator", time.Now().Add(-time.Minute), a)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if session.ExpiresAt.Sub(session.AuthenticatedAt) > 5*time.Minute {
 		t.Fatal("session lifetime extended")
 	}
-	if _, err = other.Session(ctx, hash); err != nil {
+	if _, err = other.Session(ctx, hash, profile); err != nil {
 		t.Fatal(err)
 	}
+	if _, err = s.Session(ctx, hash, strings.Repeat("b", 64)); !errors.Is(err, ErrSession) {
+		t.Fatal("foreign profile accepted", err)
+	}
 	revoke := Audit{event, "request", "operator", "session_revoke", target, "revoked"}
-	if err = s.RevokeSession(ctx, hash, revoke); err == nil {
+	if err = s.RevokeSession(ctx, hash, profile, revoke); err == nil {
 		t.Fatal("audit conflict allowed revocation")
 	}
-	if _, err = s.Session(ctx, hash); err != nil {
+	if _, err = s.Session(ctx, hash, profile); err != nil {
 		t.Fatal("revocation failed to roll back", err)
 	}
 	revoke.EventID = unique(t)
-	if err = other.RevokeSession(ctx, hash, revoke); err != nil {
+	if err = other.RevokeSession(ctx, hash, profile, revoke); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = s.Session(ctx, hash); !errors.Is(err, ErrSession) {
+	if _, err = s.Session(ctx, hash, profile); !errors.Is(err, ErrSession) {
 		t.Fatal("revoked session accepted", err)
 	}
 	expired := sha256.Sum256([]byte(unique(t)))
 	a.EventID = unique(t)
 	a.TargetID = hex.EncodeToString(expired[:])
-	if _, err = s.CreateSession(ctx, expired, "operator", time.Now().Add(-6*time.Minute), a); !errors.Is(err, ErrSession) {
+	if _, err = s.CreateSession(ctx, expired, profile, "operator", time.Now().Add(-6*time.Minute), a); !errors.Is(err, ErrSession) {
 		t.Fatal("stale authentication accepted", err)
 	}
 	fresh := sha256.Sum256([]byte(unique(t)))
 	a.EventID = unique(t)
 	a.TargetID = hex.EncodeToString(fresh[:])
-	if _, err = s.CreateSession(ctx, fresh, "operator", time.Now(), a); err != nil {
+	if _, err = s.CreateSession(ctx, fresh, profile, "operator", time.Now(), a); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = db.Exec("UPDATE keygate.sessions SET expires_at=clock_timestamp()-interval '1 second',authenticated_at=clock_timestamp()-interval '1 minute' WHERE token_hash=$1", fresh[:]); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = other.Session(ctx, fresh); !errors.Is(err, ErrSession) {
+	if _, err = other.Session(ctx, fresh, profile); !errors.Is(err, ErrSession) {
 		t.Fatal("expired session accepted", err)
+	}
+}
+
+func TestLegacyUnboundSessionsRevoked(t *testing.T) {
+	s, db := database(t)
+	ctx := context.Background()
+	h := sha256.Sum256([]byte(unique(t)))
+	zero := strings.Repeat("0", 64)
+	_, err := db.Exec(`INSERT INTO keygate.sessions(token_hash,principal_id,authenticated_at,expires_at,profile_hash) VALUES($1,'legacy',clock_timestamp(),clock_timestamp()+interval '1 minute',$2)`, h[:], zero)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = Migrate(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.Session(ctx, h, zero); !errors.Is(err, ErrSession) {
+		t.Fatal("legacy session survived migration", err)
 	}
 }
