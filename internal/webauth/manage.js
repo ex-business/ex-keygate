@@ -92,6 +92,7 @@ document.getElementById('key-operation').addEventListener('submit', event => {
     if (!client) throw new Error('请先创建客户端并刷新状态');
     const operation = {kind: data.get('kind'), clientId: client.id, expectedRevision: client.revision, name: '', profileId: '', profileVersion: '0', keyVersion: data.get('keyVersion')};
     if (operation.kind === 'key_issue') {
+      if (data.get('rotationOf')) operation.rotationOf = data.get('rotationOf');
       const recipient = JSON.parse(data.get('recipient'));
       for (const key of ['recipientPublicKey', 'recipientFingerprint', 'recipientSigningKey', 'recipientSigningFingerprint']) {
         if (typeof recipient[key] !== 'string') throw new Error(`缺少接收方字段 ${key}`);
@@ -115,3 +116,6 @@ async function keyState() {
 document.getElementById('key-status').addEventListener('click', async () => {
   try {await keyState();} catch (error) {document.getElementById('key-state').textContent = error.message;}
 });
+
+document.getElementById('lifecycle-status').addEventListener('click', () => submit(() => call(`/api/clients/${encodeURIComponent(document.getElementById('clients').value)}/lifecycle`)));
+document.getElementById('lifecycle-maintain').addEventListener('click', () => submit(() => call('/api/lifecycle/maintain', 'POST', {})));

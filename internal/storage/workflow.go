@@ -24,6 +24,7 @@ const (
 )
 
 type ControlOperation struct {
+	RotationOf                  uint64 `json:"rotationOf,string,omitempty"`
 	RecipientSigningKey         string `json:"recipientSigningKey,omitempty"`
 	RecipientSigningFingerprint string `json:"recipientSigningFingerprint,omitempty"`
 	Kind                        string `json:"kind"`
@@ -96,7 +97,7 @@ func (c *DevelopmentControl) validateOperation(ctx context.Context, tx *sql.Tx, 
 	}
 	switch op.Kind {
 	case CreateClient:
-		if op.RecipientSigningKey != "" || op.RecipientSigningFingerprint != "" || op.RootID != "" || op.KeyVersion != 0 || op.RecipientPublicKey != "" || op.RecipientFingerprint != "" || op.NotAfter != "" || op.RetireAt != "" || op.ExpectedRevision != 0 || !access.ValidID(op.ProfileID) || op.ProfileVersion == 0 || op.ProfileVersion > 9007199254740991 || len(op.Name) == 0 || len(op.Name) > 128 || !utf8.ValidString(op.Name) || strings.TrimSpace(op.Name) != op.Name {
+		if op.RotationOf != 0 || op.RecipientSigningKey != "" || op.RecipientSigningFingerprint != "" || op.RootID != "" || op.KeyVersion != 0 || op.RecipientPublicKey != "" || op.RecipientFingerprint != "" || op.NotAfter != "" || op.RetireAt != "" || op.ExpectedRevision != 0 || !access.ValidID(op.ProfileID) || op.ProfileVersion == 0 || op.ProfileVersion > 9007199254740991 || len(op.Name) == 0 || len(op.Name) > 128 || !utf8.ValidString(op.Name) || strings.TrimSpace(op.Name) != op.Name {
 			return ErrInvalid
 		}
 		var valid bool

@@ -26,6 +26,9 @@
 <p><label>接收方公开配置（申请密钥时填写）<br><textarea name="recipient" rows="5" cols="85"></textarea></label></p>
 <p><label>轮换时旧版本退役截止时间（UTC，首次启用留空）<input name="retireAt" placeholder="2026-10-19T12:05:00.000Z"></label></p>
 <button>提交操作申请</button>
+<p><label>轮换来源版本（普通签发留空）<input name="rotationOf" type="number" min="1"></label></p>
+<button id="lifecycle-status" type="button">查看版本、轮换及到期提醒</button>
+<button id="lifecycle-maintain" type="button">收尾已到期任务</button>
 <button id="key-status" type="button">查询密钥状态</button>
 </form>
 <h2>3. 审阅与审批</h2>

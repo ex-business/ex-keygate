@@ -108,6 +108,22 @@ func (c *DevelopmentControl) validateKeyOperation(ctx context.Context, tx *sql.T
 	}
 	switch op.Kind {
 	case IssueKey:
+		var open bool
+		if e := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM keygate.rotation_tasks WHERE environment=$1 AND client_id=$2 AND state IN ('preparing','overlap'))`, c.environment, op.ClientID).Scan(&open); e != nil {
+			return e
+		}
+		if open {
+			return ErrConflict
+		}
+		if op.RotationOf != 0 {
+			var valid bool
+			if e := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM keygate.key_versions WHERE environment=$1 AND client_id=$2 AND version=$3 AND state='active' AND not_after>clock_timestamp()) AND NOT EXISTS(SELECT 1 FROM keygate.rotation_tasks WHERE environment=$1 AND client_id=$2 AND state IN ('preparing','overlap'))`, c.environment, op.ClientID, op.RotationOf).Scan(&valid); e != nil {
+				return e
+			}
+			if !valid {
+				return ErrConflict
+			}
+		}
 		if !access.ValidID(op.RootID) || op.RetireAt != "" {
 			return ErrInvalid
 		}
@@ -133,7 +149,7 @@ func (c *DevelopmentControl) validateKeyOperation(ctx context.Context, tx *sql.T
 			return ErrConflict
 		}
 	case ActivateKey, DisableKey:
-		if op.RecipientSigningKey != "" || op.RecipientSigningFingerprint != "" || op.RootID != "" || op.NotAfter != "" || op.RecipientPublicKey != "" || op.RecipientFingerprint != "" {
+		if op.RotationOf != 0 || op.RecipientSigningKey != "" || op.RecipientSigningFingerprint != "" || op.RootID != "" || op.NotAfter != "" || op.RecipientPublicKey != "" || op.RecipientFingerprint != "" {
 			return ErrInvalid
 		}
 		var keyState string
@@ -157,6 +173,13 @@ func (c *DevelopmentControl) validateKeyOperation(ctx context.Context, tx *sql.T
 		e = tx.QueryRowContext(ctx, `SELECT count(*) FILTER(WHERE state='active' AND not_after>clock_timestamp()),count(*) FILTER(WHERE state='retiring' AND not_after>clock_timestamp()) FROM keygate.key_versions WHERE environment=$1 AND client_id=$2`, c.environment, op.ClientID).Scan(&active, &retiring)
 		if e != nil {
 			return e
+		}
+		var rotationValid bool
+		if e = tx.QueryRowContext(ctx, `SELECT NOT EXISTS(SELECT 1 FROM keygate.rotation_tasks t WHERE t.environment=$1 AND t.client_id=$2 AND t.state IN ('preparing','overlap') AND (t.new_version<>$3 OR EXISTS(SELECT 1 FROM keygate.key_versions k WHERE k.environment=t.environment AND k.client_id=t.client_id AND k.state='active' AND k.not_after>clock_timestamp() AND k.version<>t.old_version)))`, c.environment, op.ClientID, op.KeyVersion).Scan(&rotationValid); e != nil {
+			return e
+		}
+		if !rotationValid {
+			return ErrConflict
 		}
 		if retiring > 0 {
 			return ErrConflict
@@ -297,10 +320,15 @@ func (c *DevelopmentControl) applyKeyOperation(ctx context.Context, tx *sql.Tx, 
 			return e
 		}
 		expires, _ := exactTime(op.NotAfter)
-		_, e := tx.ExecContext(ctx, `INSERT INTO keygate.key_versions(environment,client_id,version,state,root_id,format,ciphertext,not_before,not_after,issue_id,recipient_der,recipient_fingerprint,delivery_ciphertext,claim_nonce,proof_nonce,claim_expires,recipient_signing_der,recipient_signing_fingerprint)
- VALUES($1,$2,$3,'pending',$4,$5,$6,clock_timestamp(),$7,$8,$9,$10,$11,$12,$13,LEAST($7,clock_timestamp()+interval '5 minutes'),$14,$15)`, c.environment, op.ClientID, op.KeyVersion, p.envelope.RootID, p.envelope.Format, p.envelope.Ciphertext, expires, m.RequestID, p.recipient, op.RecipientFingerprint, p.delivery, p.claimNonce, p.proofNonce, p.signingRecipient, op.RecipientSigningFingerprint)
+		_, e := tx.ExecContext(ctx, `INSERT INTO keygate.key_versions(environment,client_id,version,state,root_id,format,ciphertext,not_before,not_after,issue_id,recipient_der,recipient_fingerprint,delivery_ciphertext,claim_nonce,proof_nonce,claim_expires,recipient_signing_der,recipient_signing_fingerprint,original_not_after,original_expiry_known)
+ VALUES($1,$2,$3,'pending',$4,$5,$6,clock_timestamp(),$7,$8,$9,$10,$11,$12,$13,LEAST($7,clock_timestamp()+interval '5 minutes'),$14,$15,$7,true)`, c.environment, op.ClientID, op.KeyVersion, p.envelope.RootID, p.envelope.Format, p.envelope.Ciphertext, expires, m.RequestID, p.recipient, op.RecipientFingerprint, p.delivery, p.claimNonce, p.proofNonce, p.signingRecipient, op.RecipientSigningFingerprint)
 		if e != nil {
 			return e
+		}
+		if op.RotationOf != 0 {
+			if _, e = tx.ExecContext(ctx, `INSERT INTO keygate.rotation_tasks(environment,client_id,issue_id,old_version,new_version) VALUES($1,$2,$3,$4,$5)`, c.environment, op.ClientID, m.RequestID, op.RotationOf, op.KeyVersion); e != nil {
+				return e
+			}
 		}
 	case ActivateKey:
 		// 先清理已按时间失效的状态占位，再原子切换旧新版本，避免多个 ACTIVE 或 RETIRING。
@@ -309,7 +337,7 @@ func (c *DevelopmentControl) applyKeyOperation(ctx context.Context, tx *sql.Tx, 
 		}
 		if op.RetireAt != "" {
 			retire, _ := exactTime(op.RetireAt)
-			if _, e := tx.ExecContext(ctx, `UPDATE keygate.key_versions SET state='retiring',not_after=LEAST(not_after,$3) WHERE environment=$1 AND client_id=$2 AND state='active'`, c.environment, op.ClientID, retire); e != nil {
+			if _, e := tx.ExecContext(ctx, `UPDATE keygate.key_versions SET state='retiring',retire_at=$3,not_after=LEAST(not_after,$3) WHERE environment=$1 AND client_id=$2 AND state='active'`, c.environment, op.ClientID, retire); e != nil {
 				return e
 			}
 		}
@@ -318,6 +346,9 @@ func (c *DevelopmentControl) applyKeyOperation(ctx context.Context, tx *sql.Tx, 
 			return e
 		}
 		if e = oneResult(result); e != nil {
+			return e
+		}
+		if _, e = tx.ExecContext(ctx, `UPDATE keygate.rotation_tasks SET state='overlap' WHERE environment=$1 AND client_id=$2 AND new_version=$3 AND state='preparing'`, c.environment, op.ClientID, op.KeyVersion); e != nil {
 			return e
 		}
 	case DisableKey:

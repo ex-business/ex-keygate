@@ -156,6 +156,7 @@ func (s *Service) flowRoutes(mux *http.ServeMux) {
 			next(w, r)
 		})
 	}
+	s.lifecycleRoutes(handle)
 	handle("GET /api/config", func(w http.ResponseWriter, r *http.Request) {
 		token, ok := s.businessSession(w, r, false)
 		if !ok {
