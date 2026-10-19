@@ -14,6 +14,6 @@
 
 数据库集成测试：`python3 scripts/test-postgres.py`，需要 Docker；使用独立临时容器并在结束后清理。普通 `go test ./...` 未配置专用测试数据库时会跳过数据库集成用例。
 
-本机模拟 SSO：`go run ./cmd/mock-sso`，仅开发测试使用，见 [模拟 SSO](docs/模拟SSO.md)。当前没有可登录的管理页面；测试身份不代表真实多因素认证。
+本机模拟 SSO：`go run ./cmd/mock-sso`，仅开发测试使用，见 [模拟 SSO](docs/模拟SSO.md)。现有开发登录验证页，尚无业务管理页面；测试身份不代表真实多因素认证。
 
 开发登录闭环：[启动与验证](docs/开发登录运行.md)。可运行 `cmd/keygate-dev` 对接本机模拟 SSO，验证持久化登录和退出；默认 `cmd/keygate` 仍只提供存活检查。
