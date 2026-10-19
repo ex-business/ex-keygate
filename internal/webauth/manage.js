@@ -43,8 +43,10 @@ async function refresh() {
   profiles.replaceChildren();
   for (const profile of config.profiles) option(profiles, profile.id, `${profile.clientType} / ${profile.method}`);
   const selector = document.getElementById('clients');
+  const selectedClient = selector.value;
   selector.replaceChildren();
   for (const client of clients) option(selector, client.id, `${client.id} / ${client.type} / ${client.state} / rev ${client.revision}`);
+  if (clients.some(client => client.id === selectedClient)) selector.value = selectedClient;
   document.getElementById('client-state').textContent = JSON.stringify(clients, null, 2);
   const queue = document.getElementById('requests');
   queue.replaceChildren();
@@ -72,6 +74,7 @@ document.getElementById('logout').addEventListener('click', async () => {
     session = undefined; config = undefined; clients = [];
     for (const id of ['requests', 'clients', 'profiles']) document.getElementById(id).replaceChildren();
     document.getElementById('client-state').textContent = '';
+    document.getElementById('key-state').textContent = '';
     document.getElementById('identity').textContent = '已退出';
     result.textContent = '已退出';
   } catch (error) {result.textContent = error.message;}
@@ -102,3 +105,13 @@ document.getElementById('key-operation').addEventListener('submit', event => {
   });
 });
 submit(refresh);
+
+async function keyState() {
+  const data = new FormData(document.getElementById('key-operation'));
+  if (!data.get('clientId')) throw new Error('请先选择客户端');
+  const state = await call(`/api/clients/${encodeURIComponent(data.get('clientId'))}/keys/${encodeURIComponent(data.get('keyVersion'))}`);
+  document.getElementById('key-state').textContent = JSON.stringify(state, null, 2);
+}
+document.getElementById('key-status').addEventListener('click', async () => {
+  try {await keyState();} catch (error) {document.getElementById('key-state').textContent = error.message;}
+});

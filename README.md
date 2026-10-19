@@ -2,7 +2,7 @@
 
 支持插件扩展、共享密钥管理和多人授权的认证服务，采用 Go 单工程。
 
-已实现开发模式的人员权限、客户端模型、多人审批和软件密钥操作内核，并通过集成测试接通签发、加密交付、持有证明、审批激活、轮换与停用。主服务仍提供本机存活检查，登录控制台用于身份验证；管理与密钥 HTTP API、业务认证执行器及管理页面尚未开放。详见 [实施进度](docs/实施进度.md)。
+已接通开发后端流程：客户端管理 → 密钥申请 → 多人审批 → 启用 → 实际请求认证 → 停用。开发控制台在显式开启后提供管理页面、HTTP API 和接收方 CLI；启用前认证拒绝、启用后成功、停用后立即拒绝。默认主服务仍只提供存活检查，不用于生产。详见 [实施进度](docs/实施进度.md)。
 
 工具链：Go 1.26.9（由 go.mod 固定，启用自动工具链时首次运行可能下载）。
 
@@ -14,8 +14,10 @@
 
 数据库集成测试：`python3 scripts/test-postgres.py`，需要 Docker；使用独立临时容器并在结束后清理。普通 `go test ./...` 未配置专用测试数据库时会跳过数据库集成用例。
 
-本机模拟 SSO：`go run ./cmd/mock-sso`，仅开发测试使用，见 [模拟 SSO](docs/模拟SSO.md)。现有开发登录验证页，尚无业务管理页面；测试身份不代表真实多因素认证。
+本机模拟 SSO：`go run ./cmd/mock-sso`，仅开发测试使用，见 [模拟 SSO](docs/模拟SSO.md)。测试身份不代表真实多因素认证。
 
 开发登录闭环：[启动与验证](docs/开发登录运行.md)。可运行 `cmd/keygate-dev` 对接本机模拟 SSO，验证持久化登录和退出；默认 `cmd/keygate` 仍只提供存活检查。
 
 开发内核说明：[人员权限与客户端模型](docs/人员权限与客户端模型.md)、[审批执行](docs/审批执行闭环.md)、[软件密钥操作](docs/软件密钥操作闭环.md)。
+
+完整流程：`KEYGATE_ENV=development KEYGATE_ROOT_MODE=development_software go run ./cmd/keygate-dev -enable-key-flow`，进入 `https://localhost:18761/manage`。申请人为 `demo-requester`，审批人为 `demo-approver-1` 和 `demo-approver-2`，使用独立会话。模拟账号不等于真实多人身份。接收方通过 `cmd/keygate-client` 生成公开配置、加密领取和签名认证，步骤见 [HTTP 流程与接收方命令](docs/客户端密钥HTTP流程.md)。

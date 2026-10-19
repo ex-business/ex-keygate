@@ -285,7 +285,7 @@ func TestManagementHTTPBoundaries(t *testing.T) {
 	}
 	response = a.request(t, "GET", a.console.URL+"/manage", owner.cookie, nil, nil)
 	html := readAndClose(t, response)
-	if response.StatusCode != 200 || !bytes.Contains(html, []byte("/manage.js")) {
+	if response.StatusCode != 200 || !bytes.Contains(html, []byte("/manage.js")) || !bytes.Contains(html, []byte(`id="key-state"`)) {
 		t.Fatal("management page absent")
 	}
 }
