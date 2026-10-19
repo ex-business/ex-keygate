@@ -29,3 +29,21 @@ CREATE TABLE IF NOT EXISTS keygate.approval_requests (
     votes bytea NOT NULL CHECK (octet_length(votes) <= 1048576),
     revision bigint NOT NULL CHECK (revision >= 1)
 );
+CREATE TABLE IF NOT EXISTS keygate.login_states (
+    state_hash bytea PRIMARY KEY CHECK (octet_length(state_hash) = 32),
+    browser_hash bytea NOT NULL CHECK (octet_length(browser_hash) = 32),
+    profile_hash text NOT NULL CHECK (length(profile_hash) = 64),
+    nonce text NOT NULL,
+    verifier_cipher bytea NOT NULL CHECK (octet_length(verifier_cipher) <= 4096),
+    expires_at timestamptz NOT NULL DEFAULT (clock_timestamp() + interval '5 minutes')
+);
+CREATE TABLE IF NOT EXISTS keygate.sessions (
+    token_hash bytea PRIMARY KEY CHECK (octet_length(token_hash) = 32),
+    principal_id text NOT NULL,
+    authenticated_at timestamptz NOT NULL,
+    expires_at timestamptz NOT NULL,
+    revoked_at timestamptz,
+    CHECK (expires_at > authenticated_at)
+);
+CREATE INDEX IF NOT EXISTS session_expiry ON keygate.sessions(expires_at);
+CREATE INDEX IF NOT EXISTS login_expiry ON keygate.login_states(expires_at);
