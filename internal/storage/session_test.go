@@ -146,3 +146,28 @@ func TestLegacyUnboundSessionsRevoked(t *testing.T) {
 		t.Fatal("legacy session survived migration", err)
 	}
 }
+
+// 已完成迁移后的重复校验不能为了旧 DDL 阻塞正在使用的有效会话行。
+func TestRepeatedMigrationAvoidsDDLOnActiveSessionTable(t *testing.T) {
+	s, db := database(t)
+	ctx := context.Background()
+	h := sha256.Sum256([]byte(unique(t)))
+	profile := strings.Repeat("a", 64)
+	if _, e := s.CreateSession(ctx, h, profile, "migration-fixture", time.Now().Add(-time.Second), Audit{unique(t), unique(t), "migration-fixture", "session_create", hex.EncodeToString(h[:]), "success"}); e != nil {
+		t.Fatal(e)
+	}
+	tx, e := db.BeginTx(ctx, nil)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer tx.Rollback()
+	var raw []byte
+	if e = tx.QueryRowContext(ctx, `SELECT token_hash FROM keygate.sessions WHERE token_hash=$1 FOR UPDATE`, h[:]).Scan(&raw); e != nil {
+		t.Fatal(e)
+	}
+	bounded, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if e = Migrate(bounded, db); e != nil {
+		t.Fatal("重复迁移仍尝试锁定会话表DDL", e)
+	}
+}

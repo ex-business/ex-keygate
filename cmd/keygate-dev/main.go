@@ -190,6 +190,8 @@ func run() error {
 	server := &http.Server{Handler: service.Handler(), TLSConfig: &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{cert}}, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 20 * time.Second, WriteTimeout: 20 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	maintenanceDone := make(chan struct{})
+	go func() { defer close(maintenanceDone); service.RunLifecycleMaintenance(ctx) }()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -208,6 +210,7 @@ func run() error {
 	err = server.Serve(tls.NewListener(listener, server.TLSConfig))
 	stop()
 	<-done
+	<-maintenanceDone
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}

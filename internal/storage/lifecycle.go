@@ -58,31 +58,63 @@ func (c *DevelopmentControl) Lifecycle(ctx context.Context, token, client string
 	return out, nil
 }
 
-// MaintainLifecycle 只收紧已按数据库时间失效的状态；认证本身仍独立检查时间，不依赖维护任务存活。
+// MaintainLifecycle 是人工收尾入口，继续要求全域应急权限和近期会话。
 func (c *DevelopmentControl) MaintainLifecycle(ctx context.Context, token, trace string) error {
+	_, e := c.maintainLifecycle(ctx, token, trace, false)
+	return e
+}
+
+// MaintainExpiredLifecycle 只供可信启动装配调用，不暴露 HTTP 执行权限；只收紧已按数据库时间失效的状态。
+// 认证本身独立检查期限，维护停止、重试或并发运行都不能延长凭据有效期。
+func (c *DevelopmentControl) MaintainExpiredLifecycle(ctx context.Context, trace string) (int64, error) {
+	return c.maintainLifecycle(ctx, "", trace, true)
+}
+func (c *DevelopmentControl) maintainLifecycle(ctx context.Context, token, trace string, trusted bool) (int64, error) {
 	if !access.ValidID(trace) {
-		return ErrInvalid
+		return 0, ErrInvalid
 	}
 	tx, e := c.begin(ctx)
 	if e != nil {
-		return e
+		return 0, e
 	}
 	defer tx.Rollback()
-	a, e := c.actor(ctx, tx, token, true)
+	actor := "lifecycle-service"
+	if !trusted {
+		a, e := c.actor(ctx, tx, token, true)
+		if e != nil {
+			return 0, e
+		}
+		if !c.has(ctx, tx, a.id, access.EmergencyOperator, "") {
+			return 0, ErrDenied
+		}
+		actor = a.id
+	}
+	changed := int64(0)
+	result, e := tx.ExecContext(ctx, `UPDATE keygate.key_versions SET state='expired' WHERE environment=$1 AND state IN ('pending','staged','active','retiring') AND not_after<=clock_timestamp()`, c.environment)
 	if e != nil {
-		return e
+		return 0, e
 	}
-	if !c.has(ctx, tx, a.id, access.EmergencyOperator, "") {
-		return ErrDenied
+	n, e := result.RowsAffected()
+	if e != nil {
+		return 0, e
 	}
-	if _, e = tx.ExecContext(ctx, `UPDATE keygate.key_versions SET state='expired' WHERE environment=$1 AND state IN ('pending','staged','active','retiring') AND not_after<=clock_timestamp()`, c.environment); e != nil {
-		return e
+	changed += n
+	result, e = tx.ExecContext(ctx, `UPDATE keygate.rotation_tasks t SET state=CASE WHEN n.state='active' THEN 'completed' ELSE 'failed' END,completed_at=clock_timestamp() FROM keygate.key_versions n,keygate.key_versions o WHERE t.environment=$1 AND t.state IN ('preparing','overlap') AND n.environment=t.environment AND n.client_id=t.client_id AND n.version=t.new_version AND o.environment=t.environment AND o.client_id=t.client_id AND o.version=t.old_version AND ((t.state='overlap' AND o.state NOT IN ('active','retiring')) OR n.state IN ('disabled','expired','compromised') OR (n.state='pending' AND n.claim_expires<=clock_timestamp()))`, c.environment)
+	if e != nil {
+		return 0, e
 	}
-	if _, e = tx.ExecContext(ctx, `UPDATE keygate.rotation_tasks t SET state=CASE WHEN n.state='active' THEN 'completed' ELSE 'failed' END,completed_at=clock_timestamp() FROM keygate.key_versions n,keygate.key_versions o WHERE t.environment=$1 AND t.state IN ('preparing','overlap') AND n.environment=t.environment AND n.client_id=t.client_id AND n.version=t.new_version AND o.environment=t.environment AND o.client_id=t.client_id AND o.version=t.old_version AND ((t.state='overlap' AND o.state NOT IN ('active','retiring')) OR n.state IN ('disabled','expired','compromised') OR (n.state='pending' AND n.claim_expires<=clock_timestamp()))`, c.environment); e != nil {
-		return e
+	n, e = result.RowsAffected()
+	if e != nil {
+		return 0, e
 	}
-	if e = c.audit(ctx, tx, trace, a.id, "lifecycle_maintain", c.environment, "success"); e != nil {
-		return e
+	changed += n
+	if changed > 0 || !trusted {
+		if e = c.audit(ctx, tx, trace, actor, "lifecycle_maintain", c.environment, "success"); e != nil {
+			return 0, e
+		}
 	}
-	return tx.Commit()
+	if e = tx.Commit(); e != nil {
+		return 0, e
+	}
+	return changed, nil
 }

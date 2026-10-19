@@ -48,10 +48,31 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 	if _, err = tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(610847122)"); err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, schema); err != nil {
+	// 旧版初始化 DDL 只在首次建立迁移账本时执行；重复 ALTER 会与其他实例会话事务交叉死锁。
+	// 编号迁移 1 和旧表在同一事务完成，已存在版本 1 即代表初始化成功，之后仍逐条验证校验和。
+	var tracked bool
+	if err = tx.QueryRowContext(ctx, `SELECT to_regclass('keygate.schema_migrations') IS NOT NULL`).Scan(&tracked); err != nil {
 		return err
 	}
+	initialized := false
+	if tracked {
+		if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM keygate.schema_migrations WHERE version=1)`).Scan(&initialized); err != nil {
+			return err
+		}
+	}
+	if !initialized {
+		if _, err = tx.ExecContext(ctx, schema); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS keygate.schema_migrations(version integer PRIMARY KEY, checksum text NOT NULL, applied_at timestamptz NOT NULL DEFAULT clock_timestamp())`); err != nil {
+			return err
+		}
+	}
 	if err = migrateControl(ctx, tx); err != nil {
+		return err
+	}
+	// 保留历史未绑定会话的撤销保障，但不再为此重复 ALTER 有效会话表。
+	if _, err = tx.ExecContext(ctx, `UPDATE keygate.sessions SET revoked_at=clock_timestamp() WHERE profile_hash='0000000000000000000000000000000000000000000000000000000000000000' AND revoked_at IS NULL`); err != nil {
 		return err
 	}
 	return tx.Commit()

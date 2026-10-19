@@ -3,6 +3,7 @@ package webauth
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 func TestResumeRequiresQuarantinedDomainAndLeavesRootSetEmpty(t *testing.T) {
@@ -41,5 +42,18 @@ func TestResumeRequiresQuarantinedDomainAndLeavesRootSetEmpty(t *testing.T) {
 	owner := a.loginAs(t, "demo-requester")
 	if _, e = resumed.flow.control.Clients(ctx, owner.cookie.Value); e != nil {
 		t.Fatal("原身份无法重新登录管理", e)
+	}
+}
+
+func TestLifecycleMaintenanceStopsWithServiceContext(t *testing.T) {
+	a := setupFlow(t, true)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); a.service.RunLifecycleMaintenance(ctx) }()
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("收尾任务未随服务退出")
 	}
 }

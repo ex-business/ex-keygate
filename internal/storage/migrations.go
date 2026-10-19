@@ -35,9 +35,6 @@ var auditRefinementsSchema string
 
 // migrateControl 使用编号和校验和拒绝已应用迁移被静默修改；不自动降级。
 func migrateControl(ctx context.Context, tx *sql.Tx) error {
-	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS keygate.schema_migrations(version integer PRIMARY KEY, checksum text NOT NULL, applied_at timestamptz NOT NULL DEFAULT clock_timestamp())`); err != nil {
-		return err
-	}
 	for _, m := range []struct {
 		version int
 		body    string

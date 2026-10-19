@@ -44,8 +44,11 @@ func TestRotationTracking(t *testing.T) {
 	if _, e = f.f.c.store.db.ExecContext(ctx, `UPDATE keygate.key_versions SET not_after=clock_timestamp()-interval '1 second',not_before=clock_timestamp()-interval '1 hour' WHERE environment=$1 AND client_id='one' AND version=1`, f.f.c.environment); e != nil {
 		t.Fatal(e)
 	}
-	if e = f.f.c.MaintainLifecycle(ctx, f.f.tokens[0], unique(t)); e != nil {
-		t.Fatal(e)
+	if changed, err := f.f.c.MaintainExpiredLifecycle(ctx, unique(t)); err != nil || changed < 1 {
+		t.Fatal("自动收尾失败", changed, err)
+	}
+	if changed, err := f.f.c.MaintainExpiredLifecycle(ctx, unique(t)); err != nil || changed != 0 {
+		t.Fatal("重复收尾不幂等", changed, err)
 	}
 	out, e = f.f.c.Lifecycle(ctx, f.f.tokens[0], "one")
 	if e != nil || out[0].RotationState != "completed" || out[1].State != "expired" {

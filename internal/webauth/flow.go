@@ -147,3 +147,37 @@ func (s *Service) ResumeQuarantinedSimulatedFlow(ctx context.Context, environmen
 	s.logger.WarnContext(ctx, "已恢复隔离的开发管理域，旧根未加载，客户端须重新审批换钥", "environment", environment, "result", "quarantined")
 	return nil
 }
+
+// RunLifecycleMaintenance 是显式开发启动的过期收尾循环，不自动执行需多人审批的业务申请。
+// 单次有超时、空转不写审计/日志，多实例通过权威域锁串行，退出跟随服务上下文。
+func (s *Service) RunLifecycleMaintenance(ctx context.Context) {
+	if s.flow == nil {
+		return
+	}
+	run := func() {
+		task, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		trace := "maintenance-" + hexToken()
+		n, e := s.flow.control.MaintainExpiredLifecycle(task, trace)
+		if e != nil {
+			if ctx.Err() == nil {
+				s.logger.WarnContext(ctx, "过期生命周期收尾失败，认证仍按数据库期限拒绝", "request_id", trace, "environment", s.flow.environment, "result", "failed")
+			}
+			return
+		}
+		if n > 0 {
+			s.logger.InfoContext(ctx, "过期生命周期已自动收尾", "request_id", trace, "environment", s.flow.environment, "changed", n, "result", "success")
+		}
+	}
+	run()
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			run()
+		}
+	}
+}
