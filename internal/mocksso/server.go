@@ -137,6 +137,11 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request) {
 		for key := range r.URL.Query() {
 			hidden[key] = r.URL.Query().Get(key)
 		}
+		// 浏览器表单需要保留 Origin；no-referrer 会让非CORS POST的Origin变为null。
+		// 仅登录页使用origin级策略，不向后续请求泄露state等查询字段，仍严格校验POST来源。
+		w.Header().Set("Referrer-Policy", "origin")
+		// Chromium也校验表单提交后的重定向，只允许已配置的精确回调地址。
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; form-action 'self' "+s.config.RedirectURI+"; base-uri 'none'; frame-ancestors 'none'")
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_ = loginPage.Execute(w, hidden)
 		return

@@ -198,3 +198,32 @@ func TestMockProductionAndAddressBoundaries(t *testing.T) {
 		t.Fatal("mock ACR accepted outside development mode")
 	}
 }
+
+func TestLoginPageBrowserSecurityPolicy(t *testing.T) {
+	f := setup(t)
+	params, _ := f.parameters("demo-requester")
+	params.Del("subject")
+	response, err := f.client.Get(f.http.URL + "/authorize?" + params.Encode())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != 200 || response.Header.Get("Referrer-Policy") != "origin" {
+		t.Fatal("login page must preserve form Origin without query disclosure")
+	}
+	expected := "default-src 'none'; form-action 'self' " + f.s.config.RedirectURI + "; base-uri 'none'; frame-ancestors 'none'"
+	if response.Header.Get("Content-Security-Policy") != expected {
+		t.Fatal("form redirect must allow only configured callback")
+	}
+	if status, _, _ := f.post(t, "/authorize", params, "null"); status != 403 {
+		t.Fatal("null Origin must remain denied")
+	}
+	response2, err := f.client.Get(f.http.URL + "/jwks")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response2.Body.Close()
+	if response2.Header.Get("Referrer-Policy") != "no-referrer" {
+		t.Fatal("non-login policy changed")
+	}
+}
