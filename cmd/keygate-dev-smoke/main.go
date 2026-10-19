@@ -30,6 +30,7 @@ func run() error {
 	}
 	var app struct {
 		DevelopmentOnly bool
+		KeyFlowEnabled  bool
 		Origin, CAFile  string
 	}
 	var sso struct {
@@ -136,7 +137,7 @@ func run() error {
 	}
 	err = json.NewDecoder(io.LimitReader(response.Body, 16384)).Decode(&session)
 	closeResponse(response)
-	if err != nil || response.StatusCode != 200 || session.PrincipalID == "" || session.CSRFToken == "" || session.ManagementAuthorized {
+	if err != nil || response.StatusCode != 200 || session.PrincipalID == "" || session.CSRFToken == "" || session.ManagementAuthorized != app.KeyFlowEnabled {
 		return errors.New("session identity check failed")
 	}
 	response, err = request("POST", app.Origin+"/auth/logout", nil, map[string]string{"Origin": app.Origin, "X-CSRF-Token": "wrong"})

@@ -18,7 +18,8 @@ import (
 
 func signedProbe(t *testing.T, f keyFixture, secret []byte, body []byte) (*http.Request, httpsign.Message) {
 	t.Helper()
-	m := httpsign.Message{ClientID: "one", Environment: f.f.c.environment, Audience: "keygate-probe", RequestID: unique(t), Version: 1, Created: time.Now().Unix(), Expires: time.Now().Unix() + 60}
+	now := time.Now().Unix()
+	m := httpsign.Message{ClientID: "one", Environment: f.f.c.environment, Audience: "keygate-probe", RequestID: unique(t), Version: 1, Created: now, Expires: now + 60}
 	if _, e := rand.Read(m.Nonce[:]); e != nil {
 		t.Fatal(e)
 	}

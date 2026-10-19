@@ -65,8 +65,17 @@ async function submit(callback) {
   try { result.textContent = JSON.stringify(await callback(), null, 2); await refresh(); }
   catch (error) { result.textContent = error.message; }
 }
-document.getElementById('refresh').addEventListener('click', () => submit(refresh));
-document.getElementById('logout').addEventListener('click', () => submit(async () => {await call('/auth/logout', 'POST'); session = undefined; document.getElementById('requests').replaceChildren(); document.getElementById('identity').textContent = '已退出';}));
+document.getElementById('refresh').addEventListener('click', async () => {try {await refresh();} catch (error) {result.textContent = error.message;}});
+document.getElementById('logout').addEventListener('click', async () => {
+  try {
+    await call('/auth/logout', 'POST');
+    session = undefined; config = undefined; clients = [];
+    for (const id of ['requests', 'clients', 'profiles']) document.getElementById(id).replaceChildren();
+    document.getElementById('client-state').textContent = '';
+    document.getElementById('identity').textContent = '已退出';
+    result.textContent = '已退出';
+  } catch (error) {result.textContent = error.message;}
+});
 document.getElementById('create').addEventListener('submit', event => {
   event.preventDefault();
   const data = new FormData(event.currentTarget);

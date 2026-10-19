@@ -119,7 +119,8 @@ func (a testApp) currentClient(t *testing.T, actor businessActor) access.Client 
 func (a testApp) probe(t *testing.T, secret []byte, environment string, expected int, replay bool) {
 	t.Helper()
 	body := []byte(`{"probe":true}`)
-	m := httpsign.Message{ClientID: "backend-one", Environment: environment, Audience: probeAudience, RequestID: hexToken(), Version: 1, Created: time.Now().Unix(), Expires: time.Now().Unix() + 60}
+	now := time.Now().Unix()
+	m := httpsign.Message{ClientID: "backend-one", Environment: environment, Audience: probeAudience, RequestID: hexToken(), Version: 1, Created: now, Expires: now + 60}
 	if _, e := rand.Read(m.Nonce[:]); e != nil {
 		t.Fatal(e)
 	}

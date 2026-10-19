@@ -7,6 +7,7 @@
 - [交付和启用](#delivery)
 - [认证与停用](#authentication)
 - [状态与重试](#states)
+- [接收方命令](#recipient)
 
 <a id="scope"></a>
 ## 适用范围
@@ -85,3 +86,37 @@ client    -> signed HTTPS probe   -> rejected
 已用真实临时 PostgreSQL 和 TLS 模拟 OIDC 会话验证完整 HTTP 链路、自批/越权/CSRF 拒绝、重复 JSON 和孤立 Unicode 代理项拒绝、默认入口关闭、启用前拒绝、启用后成功、重放拒绝和停用后拒绝。
 
 【其他业务影响待确认】当前未修改其他业务、网关或 base；正式业务授权和客户端 SDK 接入仍需单独验证。
+
+
+<a id="recipient"></a>
+## 接收方命令
+
+先在仓库目录启动模拟 SSO，再通过以下方式显式开启流程（已运行的控制台需重启）：
+
+```sh
+KEYGATE_ENV=development KEYGATE_ROOT_MODE=development_software go run ./cmd/keygate-dev -enable-key-flow
+```
+
+浏览器进入 `https://localhost:18761/manage`，按前述步骤登记并批准客户端。接收方在自己的终端生成独立密钥对：
+
+```sh
+go run ./cmd/keygate-client -action init -directory data/client-one-v1
+```
+
+命令仅输出四个公开配置字段，复制到管理页面的“接收方公开配置”。RSA 与 Ed25519 私钥保存在该目录的 recipient.key。每个版本使用独立目录；已有私钥不会覆盖。随后提交密钥签发申请，两人批准后执行，记下 issueId 和 `/api/config` 返回的 environment：
+
+```sh
+go run ./cmd/keygate-client -action claim -directory data/client-one-v1 -client backend-one -version 1 -environment "<environment>" -issue "<issueId>"
+```
+
+命令校验服务器挑战的环境、客户端、版本、用途与两把公钥指纹，再签名领取、本机解密、以 0600 文件及 0700 目录保存 credential.key，并提交持有证明。成功只输出 staged 和元信息。网络失败不自动再次领取，不能通过删除已有凭据后反复重试。
+
+管理页面另行提交启用申请，两人批准并执行后，接收方发起实际签名认证：
+
+```sh
+go run ./cmd/keygate-client -action probe -directory data/client-one-v1
+```
+
+启用后输出 authenticated=true/httpStatus=200；停用后输出 false/401，并以非零退出码表示认证拒绝。自定义端口时使用 `-origin`，使用 `-ca-file` 固定可信控制台 CA；只支持直接本机 HTTPS，不跟随重定向或使用环境代理。
+
+这些磁盘软件凭据仅用于开发演示。路径 *.key 与 data/ 已被 Git 忽略，命令不将私钥或共享密钥输出到终端。旧登录烟测根据显式 keyFlowEnabled 标志分别验证“默认无管理权限”或“模拟身份已被单独授权”，不会把任意登录自动当作业务授权。

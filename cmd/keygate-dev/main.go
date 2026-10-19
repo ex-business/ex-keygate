@@ -173,7 +173,11 @@ func run() error {
 			_ = server.Close()
 		}
 	}()
-	slog.Info("开发登录控制台已启动，仅验证身份，不授予管理权限", "origin", origin, "config_file", filepath.Join(absolute, "connection.json"))
+	if *enableFlow {
+		slog.Info("开发密钥流程控制台已启动，模拟身份按独立本地授权访问", "origin", origin, "config_file", filepath.Join(absolute, "connection.json"))
+	} else {
+		slog.Info("开发登录控制台已启动，仅验证身份，不授予管理权限", "origin", origin, "config_file", filepath.Join(absolute, "connection.json"))
+	}
 	err = server.Serve(tls.NewListener(listener, server.TLSConfig))
 	stop()
 	<-done
