@@ -144,6 +144,9 @@ func (r Request) Vote(actor string, accept bool, now time.Time) (Request, error)
 	if actor == r.applicant || !slices.Contains(r.policy.Approvers, actor) {
 		return Request{}, ErrForbidden
 	}
+	if len(r.votes) > 0 && now.Before(r.votes[len(r.votes)-1].At) {
+		return Request{}, ErrInvalid
+	}
 	for _, v := range r.votes {
 		if v.Actor == actor {
 			return Request{}, ErrDuplicate

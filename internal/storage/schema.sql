@@ -23,3 +23,9 @@ CREATE TABLE IF NOT EXISTS keygate.audit_events (
     result text NOT NULL,
     created_at timestamptz NOT NULL DEFAULT clock_timestamp()
 );
+CREATE TABLE IF NOT EXISTS keygate.approval_requests (
+    id text PRIMARY KEY,
+    draft bytea NOT NULL CHECK (octet_length(draft) <= 1048576),
+    votes bytea NOT NULL CHECK (octet_length(votes) <= 1048576),
+    revision bigint NOT NULL CHECK (revision >= 1)
+);

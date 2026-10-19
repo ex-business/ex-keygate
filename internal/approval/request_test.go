@@ -100,3 +100,38 @@ func TestCopiesAndInvalidPolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestDraftReplay(t *testing.T) {
+	r, now := fixture(t)
+	a, _ := r.Vote("a", true, now)
+	approved, _ := a.Vote("b", true, now.Add(time.Second))
+	restored, err := RestoreVotes(r.Draft(), approved.Votes())
+	if err != nil || restored.State() != Approved || restored.Digest() != r.Digest() || restored.Revision() != approved.Revision() {
+		t.Fatal("journal restore failed", err)
+	}
+	d := r.Draft()
+	d.Policy.Approvers[0] = "intruder"
+	if _, err = r.Vote("a", true, now); err != nil {
+		t.Fatal("draft aliases policy")
+	}
+	if _, err = RestoreVotes(r.Draft(), []Vote{{"a", now.Add(time.Second), true}, {"b", now, true}}); !errors.Is(err, ErrInvalid) {
+		t.Fatal("backdated journal accepted", err)
+	}
+	if _, err = RestoreVotes(r.Draft(), []Vote{{"a", now, true}, {"a", now, true}}); !errors.Is(err, ErrDuplicate) {
+		t.Fatal(err)
+	}
+}
+
+func TestVoteRejectsClockRollback(t *testing.T) {
+	r, now := fixture(t)
+	first, err := r.Vote("a", true, now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = first.Vote("b", true, now); !errors.Is(err, ErrInvalid) {
+		t.Fatal("backdated vote accepted", err)
+	}
+	if first.Revision() != 2 || len(first.Votes()) != 1 {
+		t.Fatal("failed vote mutated state")
+	}
+}
