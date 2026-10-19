@@ -50,7 +50,7 @@ curl --cacert data/mock-sso/ca.pem \
 - 返回的 access_token 没有资源服务器，不授予任何 KeyGate 管理权限。
 - OIDC 适配器默认拒绝 `urn:keygate:dev:` ACR；只有显式 DevelopmentMode 才能使用，CA 通过专属信任池加载，不关闭证书校验。
 
-当前管理端完整登录回调、PKCE/state 存储及会话尚未实现，因此默认回调地址是后续接入约定，不代表已经有可登录管理页面。完整模拟链路可通过 `go test -race ./internal/mocksso` 验证，无需真实 SSO 或密码。
+开发控制台现已实现登录回调、PKCE/state 存储及会话，启动时请按《开发登录运行》将回调改为 `https://localhost:18761/auth/callback`；默认 127.0.0.1 回调保留兼容独立模拟测试。完整模拟链路可通过 `go test -race ./internal/mocksso` 验证；真实数据库浏览器处理器用例通过 `python3 scripts/test-postgres.py` 验证。
 
 ## 已验证
 
