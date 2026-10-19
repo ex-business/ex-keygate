@@ -1,0 +1,10 @@
+{
+  "name": "@ex-keygate/browser",
+  "version": "0.1.0",
+  "description": "ExKeyGate same-origin H5 session SDK",
+  "type": "module",
+  "exports": {".": {"types": "./dist/index.d.ts", "import": "./dist/index.js"}},
+  "files": ["dist", "README.md"],
+  "scripts": {"build": "tsc -p tsconfig.json", "check": "tsc -p tsconfig.json --noEmit", "test": "node --test test/*.test.mjs", "verify": "node verify.mjs"},
+  "devDependencies": {"typescript": "7.0.2"}
+}
