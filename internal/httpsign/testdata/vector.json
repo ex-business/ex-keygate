@@ -1,0 +1,18 @@
+{
+  "url": "https://Example.COM:443/a%2Fb?x=1&x=2&z=%2F",
+  "method": "POST",
+  "body": "{\"probe\":true}",
+  "publicTestKey": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+  "headers": {
+    "content-digest": "sha-256=:x3VQDqNO3tc8Kjw77eGT8Ng55sFLNvIbbMMUcuByCpE=:",
+    "content-type": "application/json",
+    "x-keygate-client": "backend",
+    "x-keygate-key-version": "1",
+    "x-keygate-audience": "keygate-probe",
+    "x-keygate-environment": "test",
+    "x-keygate-request-id": "vector-1",
+    "signature-input": "keygate=(\"@method\" \"@scheme\" \"@authority\" \"@path\" \"@query\" \"content-digest\" \"content-type\" \"x-keygate-client\" \"x-keygate-key-version\" \"x-keygate-audience\" \"x-keygate-environment\" \"x-keygate-request-id\");created=1700000000;expires=1700000060;nonce=\"ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8\";keyid=\"backend/1\";alg=\"hmac-sha256\";tag=\"ex-keygate-auth-v1\"",
+    "signature": "keygate=:+xxNFCxKUd3WAjy6/rHDFvbk5hlmo1TwcxM386zXGTE=:"
+  },
+  "base": "\"@method\": POST\n\"@scheme\": https\n\"@authority\": example.com\n\"@path\": /a%2Fb\n\"@query\": ?x=1&x=2&z=%2F\n\"content-digest\": sha-256=:x3VQDqNO3tc8Kjw77eGT8Ng55sFLNvIbbMMUcuByCpE=:\n\"content-type\": application/json\n\"x-keygate-client\": backend\n\"x-keygate-key-version\": 1\n\"x-keygate-audience\": keygate-probe\n\"x-keygate-environment\": test\n\"x-keygate-request-id\": vector-1\n\"@signature-params\": (\"@method\" \"@scheme\" \"@authority\" \"@path\" \"@query\" \"content-digest\" \"content-type\" \"x-keygate-client\" \"x-keygate-key-version\" \"x-keygate-audience\" \"x-keygate-environment\" \"x-keygate-request-id\");created=1700000000;expires=1700000060;nonce=\"ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8\";keyid=\"backend/1\";alg=\"hmac-sha256\";tag=\"ex-keygate-auth-v1\""
+}
