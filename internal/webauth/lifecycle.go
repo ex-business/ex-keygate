@@ -1,8 +1,27 @@
 package webauth
 
-import "net/http"
+import (
+	"ex-keygate/internal/storage"
+	"net/http"
+)
 
 func (s *Service) lifecycleRoutes(handle func(string, http.HandlerFunc)) {
+	handle("POST /api/revocations", func(w http.ResponseWriter, r *http.Request) {
+		token, ok := s.businessSession(w, r, true)
+		if !ok {
+			return
+		}
+		var in storage.RevocationInput
+		if e := strictJSON(w, r, &in); e != nil {
+			s.businessError(w, r, e)
+			return
+		}
+		if e := s.flow.control.Revoke(r.Context(), token, in, requestID(r)); e != nil {
+			s.businessError(w, r, e)
+			return
+		}
+		w.WriteHeader(204)
+	})
 	handle("GET /api/clients/{client}/lifecycle", func(w http.ResponseWriter, r *http.Request) {
 		token, ok := s.businessSession(w, r, false)
 		if !ok {

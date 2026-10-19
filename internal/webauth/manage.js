@@ -119,3 +119,5 @@ document.getElementById('key-status').addEventListener('click', async () => {
 
 document.getElementById('lifecycle-status').addEventListener('click', () => submit(() => call(`/api/clients/${encodeURIComponent(document.getElementById('clients').value)}/lifecycle`)));
 document.getElementById('lifecycle-maintain').addEventListener('click', () => submit(() => call('/api/lifecycle/maintain', 'POST', {})));
+
+document.getElementById('revoke').addEventListener('submit',event=>{event.preventDefault();const d=new FormData(event.currentTarget);submit(()=>{const key=new FormData(document.getElementById('key-operation'));const root=d.get('scope')==='root';return call('/api/revocations','POST',{incidentId:d.get('incidentId'),reason:d.get('reason'),clientId:root?'':key.get('clientId'),keyVersion:root?'0':key.get('keyVersion'),rootId:root?config.rootId:''});});});

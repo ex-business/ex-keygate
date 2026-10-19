@@ -31,6 +31,9 @@
 <button id="lifecycle-maintain" type="button">收尾已到期任务</button>
 <button id="key-status" type="button">查询密钥状态</button>
 </form>
+<h2>泄露撤销</h2>
+<p>撤销立即减权且不可恢复；根撤销会隔离依赖客户端。原版本即使误报也不能重新启用。</p>
+<form id="revoke"><label>事件 ID <input name="incidentId" required maxlength="128"></label><label>范围 <select name="scope"><option value="version">当前客户端及版本</option><option value="root">当前基础根及全部依赖</option></select></label><label>原因 <select name="reason"><option value="suspected_leak">疑似泄露</option><option value="confirmed_leak">确认泄露</option><option value="lost_delivery">交付丢失</option><option value="scope_unknown">影响范围未知</option></select></label><button>立即撤销</button></form>
 <h2>3. 审阅与审批</h2>
 <p>核对清单、摘要、版本和接收方指纹后投票。两名独立审批人通过后，由原申请人点击执行。领取和持有证明完成后，另行发起启用申请。</p>
 <div id="requests"></div>
