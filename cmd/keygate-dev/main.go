@@ -45,7 +45,7 @@ func main() {
 	}
 }
 func run() error {
-	trustDirectory := flag.String("trust-directory", "", "应用根证书及专用状态签名密钥目录，不允许包含根私钥")
+	trustDirectory := flag.String("trust-directory", "", "应用根及专用状态密钥私有目录；多个目录用逗号分隔，禁止包含根私钥")
 	localAccountsFile := flag.String("local-accounts-file", "", "受控本地账号配置，仅含口令摘要（私有文件）")
 	tlsDirectory := flag.String("tls-dir", "", "本机固定TLS证书私有目录（cert.pem/key.pem/ca.pem）")
 	mfaConfigFile := flag.String("mfa-config-file", "", "受控离线MFA绑定与人员流转配置（私有文件）")
@@ -241,37 +241,41 @@ func run() error {
 	}
 
 	if *trustDirectory != "" {
-		if trustchain.PrivateDirectory(*trustDirectory, false) != nil {
-			return errors.New("应用信任链目录必须为私有目录")
-		}
-		if _, e := os.Lstat(filepath.Join(*trustDirectory, "root.key")); !os.IsNotExist(e) {
-			return errors.New("管理服务不得加载包含根私钥的目录")
-		}
-		root, e := trustchain.ReadCertificate(filepath.Join(*trustDirectory, "root.pem"))
-		if e != nil {
-			return errors.New("应用根证书不可用")
-		}
-		status, e := trustchain.ReadCertificate(filepath.Join(*trustDirectory, "status.pem"))
-		if e != nil {
-			return errors.New("状态签名证书不可用")
-		}
-		key, e := trustchain.ReadPrivateKey(filepath.Join(*trustDirectory, "status.key"))
-		if e != nil {
-			return errors.New("状态签名私钥不可用")
-		}
-		defer clear(key)
-		raw, e := trustchain.ReadFile(filepath.Join(*trustDirectory, "runtime.json"), false)
-		if e != nil {
-			return errors.New("应用环境配置不可用")
-		}
-		var runtime struct {
-			Environment string `json:"environment"`
-		}
-		if trustchain.DecodeJSON(raw, &runtime) != nil {
-			return errors.New("应用环境配置无效")
-		}
-		if e = service.ConfigureApplicationTrust(startup, runtime.Environment, root, status, key); e != nil {
-			return errors.New("应用信任链装配失败")
+		// 每个根使用独立状态密钥，启动完成后运行配置保持只读。
+		for _, trustPath := range strings.Split(*trustDirectory, ",") {
+			trustPath = strings.TrimSpace(trustPath)
+			if trustchain.PrivateDirectory(trustPath, false) != nil {
+				return errors.New("应用信任链目录必须为私有目录")
+			}
+			if _, e := os.Lstat(filepath.Join(trustPath, "root.key")); !os.IsNotExist(e) {
+				return errors.New("管理服务不得加载包含根私钥的目录")
+			}
+			root, e := trustchain.ReadCertificate(filepath.Join(trustPath, "root.pem"))
+			if e != nil {
+				return errors.New("应用根证书不可用")
+			}
+			status, e := trustchain.ReadCertificate(filepath.Join(trustPath, "status.pem"))
+			if e != nil {
+				return errors.New("状态签名证书不可用")
+			}
+			key, e := trustchain.ReadPrivateKey(filepath.Join(trustPath, "status.key"))
+			if e != nil {
+				return errors.New("状态签名私钥不可用")
+			}
+			defer clear(key)
+			raw, e := trustchain.ReadFile(filepath.Join(trustPath, "runtime.json"), false)
+			if e != nil {
+				return errors.New("应用环境配置不可用")
+			}
+			var runtime struct {
+				Environment string `json:"environment"`
+			}
+			if trustchain.DecodeJSON(raw, &runtime) != nil {
+				return errors.New("应用环境配置无效")
+			}
+			if e = service.ConfigureApplicationTrust(startup, runtime.Environment, root, status, key); e != nil {
+				return errors.New("应用信任链装配失败")
+			}
 		}
 	}
 
