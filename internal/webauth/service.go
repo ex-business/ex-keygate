@@ -12,10 +12,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"ex-keygate/internal/config"
@@ -42,6 +44,9 @@ type Config struct {
 	PolicyVersion                                     uint64
 }
 type Service struct {
+	logger          *slog.Logger
+	lastRejection   atomic.Int64
+	suppressed      atomic.Uint64
 	config          Config
 	origin, profile string
 	store           *storage.Store
@@ -81,7 +86,7 @@ func New(c Config, store *storage.Store, protector Protector) (*Service, error) 
 		return nil, ErrConfig
 	}
 	digest := sha256.Sum256(profileBytes)
-	s := &Service{config: c, origin: callback.Scheme + "://" + callback.Host, profile: hex.EncodeToString(digest[:]), store: store, protector: protector, verifier: verifier, client: identity.NewHTTPClient(c.Identity.TrustedRoots)}
+	s := &Service{logger: slog.Default(), config: c, origin: callback.Scheme + "://" + callback.Host, profile: hex.EncodeToString(digest[:]), store: store, protector: protector, verifier: verifier, client: identity.NewHTTPClient(c.Identity.TrustedRoots)}
 	s.oauth = oauth2.Config{ClientID: c.Identity.ClientID, RedirectURL: c.CallbackURL, Scopes: []string{"openid", "profile"}, Endpoint: oauth2.Endpoint{AuthURL: c.AuthorizationEndpoint, TokenURL: c.TokenEndpoint, AuthStyle: oauth2.AuthStyleInParams}}
 	return s, nil
 }
@@ -159,7 +164,9 @@ func (s *Service) Handler() http.Handler {
 			fail(w, 400)
 			return
 		}
-		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+		id := "req-" + hexToken()
+		w.Header().Set("X-Request-ID", id)
+		ctx, cancel := context.WithTimeout(context.WithValue(r.Context(), requestIDKey{}, id), 15*time.Second)
 		defer cancel()
 		mux.ServeHTTP(w, r.WithContext(ctx))
 	})
@@ -170,11 +177,12 @@ func (s *Service) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	state, browser, nonce, verifier := random(), random(), random(), random()
-	requestID := "req-" + hexToken()
+	id := requestID(r)
 	stateHash := hash(state)
 	rawVerifier, _ := parse(verifier)
-	envelope, err := s.protector.Seal(r.Context(), binding(s.config.Environment, stateHash), rawVerifier[:], "anonymous", requestID)
+	envelope, err := s.protector.Seal(r.Context(), binding(s.config.Environment, stateHash), rawVerifier[:], "anonymous", id)
 	if err != nil {
+		s.rejected(r, "pkce_seal", "root_budget_or_protection_unavailable", hex.EncodeToString(stateHash[:]))
 		fail(w, 503)
 		return
 	}
@@ -184,7 +192,8 @@ func (s *Service) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	record := storage.LoginState{StateHash: stateHash, BrowserHash: hash(browser), ProfileHash: s.profile, Nonce: nonce, VerifierCipher: encrypted}
-	if err = s.store.CreateLogin(r.Context(), record, audit(requestID, "anonymous", "login_create", hex.EncodeToString(stateHash[:]), "pending")); err != nil {
+	if err = s.store.CreateLogin(r.Context(), record, audit(id, "anonymous", "login_create", hex.EncodeToString(stateHash[:]), "pending")); err != nil {
+		s.rejected(r, "login_create", "transaction_or_audit_unavailable", hex.EncodeToString(stateHash[:]))
 		fail(w, 503)
 		return
 	}
@@ -226,10 +235,11 @@ func (s *Service) callback(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400)
 		return
 	}
-	requestID := "req-" + hexToken()
+	id := requestID(r)
 	stateHash := hash(state)
-	record, err := s.store.ConsumeLogin(r.Context(), stateHash, hash(browser), s.profile, audit(requestID, "anonymous", "login_consume", hex.EncodeToString(stateHash[:]), "consumed"))
+	record, err := s.store.ConsumeLogin(r.Context(), stateHash, hash(browser), s.profile, audit(id, "anonymous", "login_consume", hex.EncodeToString(stateHash[:]), "consumed"))
 	if err != nil {
+		s.rejected(r, "login_consume", "transaction_unavailable_or_expired", hex.EncodeToString(stateHash[:]))
 		fail(w, 401)
 		return
 	}
@@ -245,6 +255,7 @@ func (s *Service) callback(w http.ResponseWriter, r *http.Request) {
 	}
 	rawVerifier, err := s.protector.Open(r.Context(), binding(s.config.Environment, stateHash), envelope)
 	if err != nil || len(rawVerifier) != 32 {
+		s.rejected(r, "pkce_open", "scope_or_ciphertext_invalid", hex.EncodeToString(stateHash[:]))
 		fail(w, 503)
 		return
 	}
@@ -253,6 +264,7 @@ func (s *Service) callback(w http.ResponseWriter, r *http.Request) {
 	tokenContext := context.WithValue(r.Context(), oauth2.HTTPClient, s.client)
 	tokens, err := s.oauth.Exchange(tokenContext, values.Get("code"), oauth2.VerifierOption(verifier))
 	if err != nil {
+		s.rejected(r, "token_exchange", "issuer_exchange_failed", hex.EncodeToString(stateHash[:]))
 		fail(w, 401)
 		return
 	}
@@ -263,13 +275,15 @@ func (s *Service) callback(w http.ResponseWriter, r *http.Request) {
 	}
 	principal, err := s.verifier.VerifyLogin(r.Context(), rawIDToken, record.Nonce)
 	if err != nil {
+		s.rejected(r, "token_verify", "identity_claims_invalid", hex.EncodeToString(stateHash[:]))
 		fail(w, 401)
 		return
 	}
 	sessionToken := random()
 	sessionHash := hash(sessionToken)
-	session, err := s.store.CreateSession(r.Context(), sessionHash, s.profile, principal.ID, principal.AuthenticatedAt, audit(requestID, principal.ID, "session_create", hex.EncodeToString(sessionHash[:]), "success"))
+	session, err := s.store.CreateSession(r.Context(), sessionHash, s.profile, principal.ID, principal.AuthenticatedAt, audit(id, principal.ID, "session_create", hex.EncodeToString(sessionHash[:]), "success"))
 	if err != nil {
+		s.rejected(r, "session_create", "transaction_or_audit_unavailable", hex.EncodeToString(sessionHash[:]))
 		fail(w, 503)
 		return
 	}
@@ -279,6 +293,7 @@ func (s *Service) callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	setCookie(w, sessionCookie, sessionToken, maxAge, http.SameSiteStrictMode)
+	s.completed(r.Context(), id, principal.ID, hex.EncodeToString(sessionHash[:]), "session_create")
 	// A first-party landing page avoids losing a Strict cookie in the
 	// cross-site IdP redirect chain; the next explicit navigation is same-site.
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -318,11 +333,13 @@ func (s *Service) logout(w http.ResponseWriter, r *http.Request) {
 		fail(w, 401)
 		return
 	}
-	requestID := "req-" + hexToken()
-	if err = s.store.RevokeSession(r.Context(), sessionHash, s.profile, audit(requestID, session.PrincipalID, "session_revoke", hex.EncodeToString(sessionHash[:]), "revoked")); err != nil {
+	id := requestID(r)
+	if err = s.store.RevokeSession(r.Context(), sessionHash, s.profile, audit(id, session.PrincipalID, "session_revoke", hex.EncodeToString(sessionHash[:]), "revoked")); err != nil {
+		s.rejected(r, "session_revoke", "transaction_or_audit_unavailable", hex.EncodeToString(sessionHash[:]))
 		fail(w, 503)
 		return
 	}
 	setCookie(w, sessionCookie, "", -1, http.SameSiteStrictMode)
+	s.completed(r.Context(), id, session.PrincipalID, hex.EncodeToString(sessionHash[:]), "session_revoke")
 	w.WriteHeader(204)
 }
