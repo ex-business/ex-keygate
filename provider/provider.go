@@ -31,6 +31,7 @@ const (
 )
 
 var (
+	ErrRejected       = errors.New("provider proof rejected")
 	ErrUnsupported    = errors.New("provider capability unsupported")
 	ErrUnavailable    = errors.New("provider unavailable")
 	ErrInvalid        = errors.New("invalid provider descriptor")
@@ -103,13 +104,16 @@ func (c *Catalog) Require(id string, capability Capability) (Descriptor, error) 
 
 type KeyReference struct {
 	ID      string `json:"id"`
-	Version uint64 `json:"version"`
+	Version uint64 `json:"version,string"`
 }
 type Verification struct {
-	RequestID string
-	ClientID  string
-	Key       KeyReference
-	Algorithm string
+	Environment string
+	Audience    string
+	Purpose     string
+	RequestID   string
+	ClientID    string
+	Key         KeyReference
+	Algorithm   string
 	// Payload must already bind the client, audience, purpose and replay fields.
 	Payload []byte
 	Proof   []byte
