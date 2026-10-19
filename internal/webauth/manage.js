@@ -32,7 +32,7 @@ const errorMessages={400:'输入内容不符合要求，请检查字段。',401:
 async function api(path, method='GET', data, idempotency) {
  const headers={};if(method==='POST'){headers['Content-Type']='application/json';headers['X-CSRF-Token']=state.session?.csrfToken||'';if(idempotency)headers['X-Idempotency-Key']=idempotency;}
  let response;try{response=await fetch(path,{method,headers,credentials:'same-origin',cache:'no-store',redirect:'error',signal:AbortSignal.timeout(12000),body:data===undefined?undefined:JSON.stringify(data)});}catch{throw new Error(method==='POST'?'网络异常，操作结果尚未确认。请刷新申请列表核对后再处理。':'连接失败，请稍后刷新。');}
- if(!response.ok){const e=new Error(errorMessages[response.status]||'请求未完成，请稍后核对。');e.status=response.status;e.requestId=response.headers.get('X-Request-ID');if(response.status===401)clearIdentity();throw e;}
+ if(!response.ok){const e=new Error(errorMessages[response.status]||'请求未完成，请稍后核对。');e.status=response.status;e.requestId=response.headers.get('X-Request-ID');if(response.status===401){clearIdentity();location.replace('/login');}throw e;}
  if(response.status===204)return null;return response.json();
 }
 // 身份失效时同时清除异步区域与回调，避免旧响应恢复上一身份的数据。
@@ -59,10 +59,10 @@ function canExecute(r) {return requestState(r)==='approved'&&manifest(r).applica
 function requestRows(records,compact=false) {return records.map(r=>{const m=manifest(r),op=m.operation;const action=node('div','table-actions');action.append(button(isCurrent(r)?'查看并处理':canExecute(r)?'确认执行':'查看详情',()=>openRequest(r.id),'text-button'));const progress=r.progress?`${r.progress.completed} / ${r.progress.m} 人已同意`:`${m.threshold} 人审批`;return [textCell(labels.operations[op.kind]||'变更申请',(state.clients||[]).find(c=>c.id===op.clientId)?.name||op.clientId),badge(requestState(r)),textCell(person(m.applicant.principalId,m.applicant.personId),date(m.created)),compact?progress:textCell(progress,r.progress?.currentPrincipalId?'当前：'+person(r.progress.currentPrincipalId):requestState(r)==='expired'?'申请已到期':'按当前策略处理'),action];});}
 function renderAll() {renderIdentity();renderOverview();renderClients();renderApprovals();renderVerification();renderPolicies();renderPeople();renderPlugins();updateKeySelector();renderKeyRows();renderPage();}
 function renderIdentity() {
- const own=state.context?.identity;$('#login').textContent=state.session?'重新认证':'SSO 登录';$('#logout').hidden=!state.session;$('#user-name').hidden=!own;$('#user-name').textContent=own?person(own.principalId):'';
+ const own=state.context?.identity;$('#login').textContent=state.session?'重新认证':'登录';$('#logout').hidden=!state.session;$('#user-name').hidden=!own;$('#user-name').textContent=own?person(own.principalId):'';
  $('#environment').textContent=state.context?(state.context.simulatedIdentity?'开发环境 · 模拟身份':'开发环境 · 外部 SSO'):'尚未登录';
  const banner=$('#session-banner');banner.replaceChildren();banner.hidden=false;banner.className='notice';
- if(!state.session){banner.append(node('span','','请先通过 SSO 登录，进入你的工作空间。'));const a=node('a','button small','SSO 登录');a.href='/auth/login';banner.append(a);}
+ if(!state.session){banner.append(node('span','','请先通过 SSO 登录，进入你的工作空间。'));const a=node('a','button small','SSO 登录');a.href='/login';banner.append(a);}
  else if(!own){banner.append(node('span','','身份已验证，但尚未取得本地授权信息。请联系授权管理员核对登记。'));}
  else if(own.mfaRequired&&!own.mfaVerified){banner.append(node('span','','本人二次验证尚未完成。管理数据和关键操作将在验证后开放。'),button('完成本人验证',()=>startMFA('management'),'small'));}
  else {banner.hidden=true;}
@@ -171,7 +171,7 @@ for(const d of document.querySelectorAll('dialog'))for(const b of d.querySelecto
 $('#work-dialog').addEventListener('close',()=>{state.dialogEpoch++;});
 $('#mfa-dialog').addEventListener('close',()=>{state.mfaEpoch++;afterMFA=null;state.mfa=null;$('#mfa-factors').replaceChildren();});
 $('#refresh').addEventListener('click',refresh);$('#collapse-nav').addEventListener('click',()=>{document.body.classList.toggle('collapsed');$('#collapse-nav').setAttribute('aria-expanded',String(!document.body.classList.contains('collapsed')));});
-$('#logout').addEventListener('click',()=>busy($('#logout'),async()=>{await api('/auth/logout','POST');clearIdentity();toast('已退出。');}));
+$('#logout').addEventListener('click',()=>busy($('#logout'),async()=>{await api('/auth/logout','POST');clearIdentity();location.replace('/login');}));
 for(const id of ['client-search','client-type','client-status'])$('#'+id).addEventListener(id==='client-search'?'input':'change',()=>{state.clientPage=0;renderClients();});
 for(const b of $('#approval-tabs').querySelectorAll('button'))b.addEventListener('click',()=>{state.approvalFilter=b.dataset.filter;for(const n of $('#approval-tabs').querySelectorAll('button'))n.classList.toggle('active',n===b);renderApprovals();});$('#approval-status').addEventListener('change',renderApprovals);
 $('#key-client').addEventListener('change',()=>selectClient($('#key-client').value));$('#load-keys').addEventListener('click',()=>busy($('#load-keys'),loadKeys));$('#issue-key').addEventListener('click',()=>openKey());$('#load-recoveries').addEventListener('click',()=>busy($('#load-recoveries'),loadRecoveries));$('#new-root').addEventListener('click',openRoot);

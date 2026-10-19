@@ -44,6 +44,7 @@ func main() {
 	}
 }
 func run() error {
+	localAccountsFile := flag.String("local-accounts-file", "", "受控本地账号配置，仅含口令摘要（私有文件）")
 	tlsDirectory := flag.String("tls-dir", "", "本机固定TLS证书私有目录（cert.pem/key.pem/ca.pem）")
 	mfaConfigFile := flag.String("mfa-config-file", "", "受控离线MFA绑定与人员流转配置（私有文件）")
 	mfaPluginsFile := flag.String("mfa-plugins-file", "", "MFA邮件/短信/硬件mTLS插件配置（私有文件）")
@@ -223,6 +224,20 @@ func run() error {
 			return errors.New("MFA离线配置失败，未开放HTTP服务")
 		}
 	}
+	if *localAccountsFile != "" {
+		raw, e := readPrivate(*localAccountsFile)
+		if e != nil {
+			return errors.New("本地账号配置不可用")
+		}
+		var plan webauth.LocalAccountPlan
+		if provider.DecodeStrict(raw, &plan) != nil {
+			return errors.New("本地账号配置无效")
+		}
+		if e = service.ProvisionLocalAccountsOffline(startup, plan); e != nil {
+			return errors.New("本地账号绑定失败，未开放HTTP服务")
+		}
+	}
+
 	var cert tls.Certificate
 	var publicCA []byte
 	if *tlsDirectory != "" {

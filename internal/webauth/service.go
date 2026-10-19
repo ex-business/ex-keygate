@@ -1,5 +1,5 @@
-// Package webauth implements a development OIDC browser-login boundary.
-// Authenticated sessions never imply local management or approval permissions.
+// Package webauth 实现开发阶段的账号密码、OIDC与原生二次验证登录边界。
+// 身份会话不直接赋予管理或审批权限，业务请求必须独立核验。
 package webauth
 
 import (
@@ -52,6 +52,8 @@ type Config struct {
 	ClientSecret                                      string `json:"-"`
 }
 type Service struct {
+	localAccounts   bool
+	passwordSlots   chan struct{}
 	handlerStarted  atomic.Bool
 	flow            *developmentFlow
 	logger          *slog.Logger
@@ -110,7 +112,7 @@ func New(c Config, store *storage.Store, protector Protector) (*Service, error) 
 	if (c.MFAPlugins.Email != nil || c.MFAPlugins.SMS != nil || c.MFAPlugins.Hardware != nil) && !validMFAPolicyHash(c.MFAPluginPolicyHash) {
 		return nil, ErrConfig
 	}
-	profileValues := []any{c.MFAPluginPolicyHash, "admin-fresh-login-v1", c.Identity.RequiredAMR, c.TokenAuthMethod, c.Identity.Issuer, c.Identity.JWKSURL, c.Identity.ClientID, c.Identity.AllowedACR, c.Identity.MaxAuthAge, c.AuthorizationEndpoint, c.TokenEndpoint, c.CallbackURL, c.PolicyVersion, c.Environment, protector.RootID()}
+	profileValues := []any{c.MFAPluginPolicyHash, "admin-local-password-mfa-v2", c.Identity.RequiredAMR, c.TokenAuthMethod, c.Identity.Issuer, c.Identity.JWKSURL, c.Identity.ClientID, c.Identity.AllowedACR, c.Identity.MaxAuthAge, c.AuthorizationEndpoint, c.TokenEndpoint, c.CallbackURL, c.PolicyVersion, c.Environment, protector.RootID()}
 	if len(c.BrowserReturnPaths) > 0 {
 		profileValues = append(profileValues, c.BrowserReturnPaths)
 	}
@@ -119,7 +121,7 @@ func New(c Config, store *storage.Store, protector Protector) (*Service, error) 
 		return nil, ErrConfig
 	}
 	digest := sha256.Sum256(profileBytes)
-	s := &Service{logger: slog.Default(), config: c, origin: callback.Scheme + "://" + callback.Host, profile: hex.EncodeToString(digest[:]), store: store, protector: protector, verifier: verifier, client: identity.NewHTTPClient(c.Identity.TrustedRoots)}
+	s := &Service{passwordSlots: make(chan struct{}, 4), logger: slog.Default(), config: c, origin: callback.Scheme + "://" + callback.Host, profile: hex.EncodeToString(digest[:]), store: store, protector: protector, verifier: verifier, client: identity.NewHTTPClient(c.Identity.TrustedRoots)}
 	authStyle := oauth2.AuthStyleInParams
 	if c.TokenAuthMethod == "client_secret_basic" {
 		authStyle = oauth2.AuthStyleInHeader
@@ -191,18 +193,13 @@ func (s *Service) Handler() http.Handler {
 	if s.flow != nil {
 		s.flowRoutes(mux)
 	}
+	s.localLoginRoutes(mux)
 	mux.HandleFunc("GET /auth/login", s.login)
 	mux.HandleFunc("GET /auth/callback", s.callback)
 	mux.HandleFunc("GET /auth/session", s.session)
 	mux.HandleFunc("POST /auth/logout", s.logout)
-	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if s.flow != nil {
-			_, _ = w.Write([]byte(`<html lang="zh"><meta charset="utf-8"><title>ExKeyGate 开发流程</title><h1>ExKeyGate 开发流程</h1><p>已显式开启模拟授权；仅供开发测试。</p><a href="/auth/login">通过模拟 SSO 登录</a><p><a href="/manage">客户端与密钥管理</a></p></html>`))
-			return
-		}
-		_, _ = w.Write([]byte(`<!doctype html><html lang="zh"><meta charset="utf-8"><title>ExKeyGate 开发登录</title><h1>ExKeyGate 开发登录</h1><p>这里只验证登录和会话，不授予管理或审批权限。</p><a href="/auth/login">通过 SSO 登录</a><p><a href="/auth/session">查看当前会话</a></p></html>`))
-	})
+	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "/login", http.StatusSeeOther) })
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Referrer-Policy", "no-referrer")
@@ -359,10 +356,10 @@ func (s *Service) callback(w http.ResponseWriter, r *http.Request) {
 	setCookie(w, sessionCookie, sessionToken, maxAge, http.SameSiteStrictMode)
 	s.completed(r.Context(), id, principal.ID, hex.EncodeToString(sessionHash[:]), "session_create")
 	if s.flow != nil {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = w.Write([]byte(`<html lang="zh"><meta charset="utf-8"><p>身份已验证，业务权限按当前授权检查。</p><a href="/manage">进入开发管理</a></html>`))
+		s.loginPage(w, r)
 		return
 	}
+
 	// 第一方确认页让后续显式点击成为同站导航，避免跨站 IdP 跳转链影响 Strict Cookie。
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write([]byte(`<!doctype html><html lang="zh"><meta charset="utf-8"><title>登录完成</title><p>登录成功，身份已验证；尚未授予管理或审批权限。</p><a href="/auth/session">查看当前会话</a></html>`))

@@ -14,6 +14,7 @@ STEPS = [
     ("diff", ["git", "diff", "--check"]),
     ("vet", ["go", "vet", "./..."]),
     ("javascript", ["node", "--check", "internal/webauth/manage.js"]),
+    ("login-javascript", ["node", "--check", "internal/webauth/login.js"]),
     ("h5-javascript", ["node", "--check", "internal/webauth/h5.js"]),
     ("sdk-dependencies", ["npm", "ci", "--ignore-scripts", "--no-audit", "--prefix", "sdk/browser"]),
     ("sdk-types", ["npm", "run", "check", "--prefix", "sdk/browser"]),
