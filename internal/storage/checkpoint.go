@@ -31,6 +31,7 @@ var checkpointTables = []checkpointTable{
 	{"provider_candidates", "environment=$1"}, {"provider_policies", "environment=$1"}, {"provider_checks", "environment=$1"},
 	{"root_budgets", "root_id IN (SELECT root_id FROM keygate.client_roots WHERE environment=$1)"},
 	{"mfa_policies", "environment=$1"}, {"mfa_factors", "environment=$1"}, {"mfa_challenges", "environment=$1"}, {"mfa_attempts", "environment=$1"}, {"mfa_proofs", "environment=$1"},
+	{"local_accounts", "environment=$1"}, {"local_login_budget", "environment=$1"},
 	{"browser_sessions", "environment=$1"},
 	{"sessions", "principal_id IN(SELECT principal_id FROM keygate.principals WHERE environment=$1)"},
 	{"scoped_audit", "environment=$1"}, {"audit_events", "event_id IN(SELECT event_id FROM keygate.scoped_audit WHERE environment=$1)"},

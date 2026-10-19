@@ -60,6 +60,9 @@ func (c *DevelopmentControl) createBrowserSession(ctx context.Context, tx *sql.T
 	if e != nil {
 		return out, e
 	}
+	if e = c.requireLocalSessionMFA(ctx, tx, identityHash[:]); e != nil {
+		return out, e
+	}
 	var revision uint64
 	e = tx.QueryRowContext(ctx, `SELECT c.revision FROM keygate.clients c JOIN keygate.auth_profiles p ON p.environment=c.environment AND p.profile_id=c.profile_id AND p.version=c.profile_version WHERE c.environment=$1 AND c.client_id=$2 AND c.state='enabled' AND c.client_type='browser' AND p.enabled AND p.client_type='browser' AND p.method='federated_session' AND p.storage='none' AND p.provider_id='oidc'`, c.environment, clientID).Scan(&revision)
 	if errors.Is(e, sql.ErrNoRows) {
@@ -108,9 +111,13 @@ func (c *DevelopmentControl) browserSession(ctx context.Context, tx *sql.Tx, cli
 	if e != nil {
 		return out, e
 	}
-	e = tx.QueryRowContext(ctx, `SELECT b.principal_id,b.authenticated_at,b.expires_at FROM keygate.browser_sessions b JOIN keygate.sessions s ON s.token_hash=b.identity_hash JOIN keygate.principals u ON u.environment=b.environment AND u.principal_id=b.principal_id JOIN keygate.clients c ON c.environment=b.environment AND c.client_id=b.client_id JOIN keygate.auth_profiles p ON p.environment=c.environment AND p.profile_id=c.profile_id AND p.version=c.profile_version WHERE b.environment=$1 AND b.client_id=$2 AND b.token_hash=$3 AND b.profile_hash=$4 AND b.revoked_at IS NULL AND b.expires_at>clock_timestamp() AND s.principal_id=b.principal_id AND s.profile_hash=$4 AND s.revoked_at IS NULL AND s.expires_at>clock_timestamp() AND u.enabled AND u.revision=b.principal_revision AND c.state='enabled' AND c.revision=b.client_revision AND c.client_type='browser' AND p.enabled AND p.client_type='browser' AND p.method='federated_session' AND p.storage='none' AND p.provider_id='oidc' FOR UPDATE OF b,s,u`, c.environment, clientID, h[:], c.profile).Scan(&out.PrincipalID, &out.AuthenticatedAt, &out.ExpiresAt)
+	var parentHash []byte
+	e = tx.QueryRowContext(ctx, `SELECT b.principal_id,b.authenticated_at,b.expires_at,s.token_hash FROM keygate.browser_sessions b JOIN keygate.sessions s ON s.token_hash=b.identity_hash JOIN keygate.principals u ON u.environment=b.environment AND u.principal_id=b.principal_id JOIN keygate.clients c ON c.environment=b.environment AND c.client_id=b.client_id JOIN keygate.auth_profiles p ON p.environment=c.environment AND p.profile_id=c.profile_id AND p.version=c.profile_version WHERE b.environment=$1 AND b.client_id=$2 AND b.token_hash=$3 AND b.profile_hash=$4 AND b.revoked_at IS NULL AND b.expires_at>clock_timestamp() AND s.principal_id=b.principal_id AND s.profile_hash=$4 AND s.revoked_at IS NULL AND s.expires_at>clock_timestamp() AND u.enabled AND u.revision=b.principal_revision AND c.state='enabled' AND c.revision=b.client_revision AND c.client_type='browser' AND p.enabled AND p.client_type='browser' AND p.method='federated_session' AND p.storage='none' AND p.provider_id='oidc' FOR UPDATE OF b,s,u`, c.environment, clientID, h[:], c.profile).Scan(&out.PrincipalID, &out.AuthenticatedAt, &out.ExpiresAt, &parentHash)
 	if errors.Is(e, sql.ErrNoRows) {
 		return BrowserSession{}, ErrDenied
+	}
+	if e == nil {
+		e = c.requireLocalSessionMFA(ctx, tx, parentHash)
 	}
 	return out, e
 }

@@ -48,12 +48,15 @@ var loginFreshnessSchema string
 //go:embed native_mfa_schema.sql
 var nativeMFASchema string
 
+//go:embed local_accounts_schema.sql
+var localAccountsSchema string
+
 // migrateControl 使用编号和校验和拒绝已应用迁移被静默修改；不自动降级。
 func migrateControl(ctx context.Context, tx *sql.Tx) error {
 	for _, m := range []struct {
 		version int
 		body    string
-	}{{1, controlSchema}, {2, workflowSchema}, {3, keysSchema}, {4, lifecycleSchema}, {5, revocationSchema}, {6, recoverySchema}, {7, auditSchema}, {8, auditRefinementsSchema}, {9, providersSchema}, {10, clusterSchema}, {11, browserSchema}, {12, loginFreshnessSchema}, {13, nativeMFASchema}} {
+	}{{1, controlSchema}, {2, workflowSchema}, {3, keysSchema}, {4, lifecycleSchema}, {5, revocationSchema}, {6, recoverySchema}, {7, auditSchema}, {8, auditRefinementsSchema}, {9, providersSchema}, {10, clusterSchema}, {11, browserSchema}, {12, loginFreshnessSchema}, {13, nativeMFASchema}, {14, localAccountsSchema}} {
 		hash := sha256.Sum256([]byte(m.body))
 		checksum := hex.EncodeToString(hash[:])
 		var existing string

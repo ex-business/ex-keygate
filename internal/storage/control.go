@@ -190,6 +190,11 @@ func (c *DevelopmentControl) actor(ctx context.Context, tx *sql.Tx, token string
 	if e != nil {
 		return a, e
 	}
+	h := sha256.Sum256([]byte(token))
+	if e = c.requireLocalSessionMFA(ctx, tx, h[:]); e != nil {
+		return a, e
+	}
+
 	// 管理和审批在同一权威事务内检查MFA；不能在HTTP层查过后留下撤销与执行之间的竞态。
 	if e = c.requireNativeMFA(ctx, tx, token, a); e != nil {
 		return a, e
