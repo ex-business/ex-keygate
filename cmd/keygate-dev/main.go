@@ -30,6 +30,7 @@ import (
 	"ex-keygate/internal/identity"
 	"ex-keygate/internal/keycrypto"
 	"ex-keygate/internal/keyservice"
+	"ex-keygate/internal/localcert"
 	"ex-keygate/internal/mfa"
 	"ex-keygate/internal/storage"
 	"ex-keygate/internal/webauth"
@@ -43,6 +44,7 @@ func main() {
 	}
 }
 func run() error {
+	tlsDirectory := flag.String("tls-dir", "", "本机固定TLS证书私有目录（cert.pem/key.pem/ca.pem）")
 	mfaConfigFile := flag.String("mfa-config-file", "", "受控离线MFA绑定与人员流转配置（私有文件）")
 	mfaPluginsFile := flag.String("mfa-plugins-file", "", "MFA邮件/短信/硬件mTLS插件配置（私有文件）")
 	resumeEnvironment := flag.String("resume-environment", "", "显式恢复已隔离的开发管理域")
@@ -221,7 +223,13 @@ func run() error {
 			return errors.New("MFA离线配置失败，未开放HTTP服务")
 		}
 	}
-	cert, publicCA, err := devtls.Certificate("ExKeyGate Development Console")
+	var cert tls.Certificate
+	var publicCA []byte
+	if *tlsDirectory != "" {
+		cert, publicCA, err = localcert.Load(*tlsDirectory)
+	} else {
+		cert, publicCA, err = devtls.Certificate("ExKeyGate Development Console")
+	}
 	if err != nil {
 		return err
 	}

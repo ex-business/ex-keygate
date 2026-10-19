@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"ex-keygate/internal/devtls"
+	"ex-keygate/internal/localcert"
 	"ex-keygate/internal/mocksso"
 )
 
@@ -27,6 +28,7 @@ func main() {
 	}
 }
 func run() error {
+	tlsDirectory := flag.String("tls-dir", "", "本机固定TLS证书私有目录（cert.pem/key.pem/ca.pem）")
 	port := flag.Int("port", 19443, "Loopback TLS port; use 0 for a random port")
 	directory := flag.String("output", "data/mock-sso", "Directory for public CA and non-secret connection metadata")
 	redirect := flag.String("redirect", "https://127.0.0.1:18761/auth/callback", "Exact loopback HTTPS callback URI")
@@ -54,7 +56,13 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	certificate, ca, err := certificate()
+	var certificate tls.Certificate
+	var ca []byte
+	if *tlsDirectory != "" {
+		certificate, ca, err = localcert.Load(*tlsDirectory)
+	} else {
+		certificate, ca, err = devtls.Certificate("ExKeyGate Mock SSO")
+	}
 	if err != nil {
 		return err
 	}
