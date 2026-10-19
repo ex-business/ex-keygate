@@ -31,6 +31,7 @@ var checkpointTables = []checkpointTable{
 	{"provider_candidates", "environment=$1"}, {"provider_policies", "environment=$1"}, {"provider_checks", "environment=$1"},
 	{"root_budgets", "root_id IN (SELECT root_id FROM keygate.client_roots WHERE environment=$1)"},
 	{"mfa_policies", "environment=$1"}, {"mfa_factors", "environment=$1"}, {"mfa_challenges", "environment=$1"}, {"mfa_attempts", "environment=$1"}, {"mfa_proofs", "environment=$1"},
+	{"application_trust_roots", "environment=$1"}, {"application_trust_services", "environment=$1"}, {"application_trust_certificates", "environment=$1"},
 	{"local_accounts", "environment=$1"}, {"local_login_budget", "environment=$1"},
 	{"browser_sessions", "environment=$1"},
 	{"sessions", "principal_id IN(SELECT principal_id FROM keygate.principals WHERE environment=$1)"},
@@ -161,6 +162,10 @@ func (s *Store) QuarantineRestored(ctx context.Context, expected SafetyCheckpoin
 			return e
 		}
 	}
+	if _, e = tx.ExecContext(ctx, `UPDATE keygate.application_trust_services SET disabled=true,revision=revision+1 WHERE environment=$1`, environment); e != nil {
+		return e
+	}
+
 	if _, e = tx.ExecContext(ctx, `UPDATE keygate.browser_sessions SET revoked_at=clock_timestamp() WHERE environment=$1 AND revoked_at IS NULL`, environment); e != nil {
 		return e
 	}

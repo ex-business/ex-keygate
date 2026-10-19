@@ -27,6 +27,9 @@ const (
 )
 
 type ControlOperation struct {
+	TrustCertificate            []byte `json:"trustCertificate,omitempty"`
+	TrustProof                  []byte `json:"trustProof,omitempty"`
+	TrustRootFingerprint        string `json:"trustRootFingerprint,omitempty"`
 	ProviderID                  string `json:"providerId,omitempty"`
 	ProviderDigest              string `json:"providerDigest,omitempty"`
 	RotationReason              string `json:"rotationReason,omitempty"`
@@ -108,6 +111,13 @@ func (c *DevelopmentControl) validateOperation(ctx context.Context, tx *sql.Tx, 
 	if !access.ValidID(op.ClientID) || op.ExpectedRevision > 9007199254740991 {
 		return ErrInvalid
 	}
+	if op.Kind == PublishTrustCertificate || op.Kind == DisableTrustService {
+		return c.validateTrustOperation(ctx, tx, op)
+	}
+	if len(op.TrustCertificate) != 0 || len(op.TrustProof) != 0 || op.TrustRootFingerprint != "" {
+		return ErrInvalid
+	}
+
 	if op.Kind != EnableProvider && (op.ProviderID != "" || op.ProviderDigest != "") {
 		return ErrInvalid
 	}
@@ -627,6 +637,10 @@ func (c *DevelopmentControl) executePreparedAs(ctx context.Context, id, digest, 
 		n, _ := result.RowsAffected()
 		if n != 1 {
 			return ErrConflict
+		}
+	} else if op.Kind == PublishTrustCertificate || op.Kind == DisableTrustService {
+		if e = c.applyTrustOperation(ctx, tx, op); e != nil {
+			return e
 		}
 	} else if op.Kind == EnableProvider {
 		if e = c.applyProviderOperation(ctx, tx, op); e != nil {

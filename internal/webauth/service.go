@@ -52,20 +52,21 @@ type Config struct {
 	ClientSecret                                      string `json:"-"`
 }
 type Service struct {
-	localAccounts   bool
-	passwordSlots   chan struct{}
-	handlerStarted  atomic.Bool
-	flow            *developmentFlow
-	logger          *slog.Logger
-	lastRejection   atomic.Int64
-	suppressed      atomic.Uint64
-	config          Config
-	origin, profile string
-	store           *storage.Store
-	protector       Protector
-	verifier        *identity.OIDC
-	oauth           oauth2.Config
-	client          *http.Client
+	applicationTrust *applicationTrustRuntime
+	localAccounts    bool
+	passwordSlots    chan struct{}
+	handlerStarted   atomic.Bool
+	flow             *developmentFlow
+	logger           *slog.Logger
+	lastRejection    atomic.Int64
+	suppressed       atomic.Uint64
+	config           Config
+	origin, profile  string
+	store            *storage.Store
+	protector        Protector
+	verifier         *identity.OIDC
+	oauth            oauth2.Config
+	client           *http.Client
 }
 
 func New(c Config, store *storage.Store, protector Protector) (*Service, error) {
