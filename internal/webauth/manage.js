@@ -12,7 +12,7 @@ async function call(path, method = 'GET', data) {
   }
   const response = await fetch(path, {method, headers, credentials: 'same-origin', body: data === undefined ? undefined : JSON.stringify(data)});
   const text = await response.text();
-  if (!response.ok) throw new Error(`${response.status}: ${text}`);
+  if (!response.ok) {const error=new Error(`${response.status}: ${text}`);error.status=response.status;throw error;}
   return text ? JSON.parse(text) : null;
 }
 function option(parent, value, label) {
@@ -35,8 +35,10 @@ function action(row, label, callback) {
 }
 async function refresh() {
   session = await call('/auth/session');
-  document.getElementById('identity').textContent = `身份：${session.principalId}；管理读取权限：${session.managementAuthorized ? '已授权' : '未授权'}；会话到期：${session.expiresAt}`;
-  config = await call('/api/config');
+  document.getElementById('identity').textContent = `身份：${session.principalId}；全域配置读取权限：${session.managementAuthorized ? '已授权' : '未授权'}；会话到期：${session.expiresAt}`;
+  // 独立审计员和局部授权无需全域 Profile；仅容忍明确的权限拒绝，其余故障继续提示。
+  try {config = await call('/api/config');}
+  catch(error) {if(error.status!==403) throw error;config={profiles:[],rootId:''};}
   clients = await call('/api/clients');
   const records = await call('/api/requests');
   const profiles = document.getElementById('profiles');

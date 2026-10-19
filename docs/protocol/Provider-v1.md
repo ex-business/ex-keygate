@@ -38,3 +38,10 @@
 所有运行调用携带超时上下文。对创建、轮换、停用等有副作用操作，协议扩展必须包含唯一操作 ID 和幂等/结果查询约定，结果未知时先核对，不直接重试。远程接入必须具备端点白名单、双向身份认证和网络出口限制。
 
 Go 接口当前是进程内契约，不代表远程协议已经可互操作；HTTP 路径、编码、限额、完整请求响应及一致性测试在传输实现前另行固定。
+
+
+## 根托管与异常结果预留
+
+`provider.RootCustodian` 预留不可变 RootReference（Provider/Key/Version/Fingerprint/Purpose）、作用域绑定的 WrapRoot/UnwrapRoot、InspectRoot 及 QueryRootOperation。`RootOperationFencer` 预留旧执行器隔离确认。明文只允许在可信调用边界内短暂传递，不能写入描述、日志或管理 HTTP。
+
+本批没有实现或装配 KMS/HSM。现有软件执行器继续使用专用本地 Wrapper，不能把这些接口注入当前本地事务执行路径。远程适配器须另行实现幂等、预算、权威 UNKNOWN 核对及隔离验证，不能因声明接口就获准执行。

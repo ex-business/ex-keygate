@@ -21,3 +21,6 @@
 开发内核说明：[人员权限与客户端模型](docs/人员权限与客户端模型.md)、[审批执行](docs/审批执行闭环.md)、[软件密钥操作](docs/软件密钥操作闭环.md)。
 
 完整流程：`KEYGATE_ENV=development KEYGATE_ROOT_MODE=development_software go run ./cmd/keygate-dev -enable-key-flow`，进入 `https://localhost:18761/manage`。申请人为 `demo-requester`，审批人为 `demo-approver-1` 和 `demo-approver-2`，使用独立会话。模拟账号不等于真实多人身份。接收方通过 `cmd/keygate-client` 生成公开配置、加密领取和签名认证，步骤见 [HTTP 流程与接收方命令](docs/客户端密钥HTTP流程.md)。
+
+
+生命周期：开发模式已支持轮换任务与提示、泄露撤销、两阶段隔离恢复、审计筛选/JSONL 快照、独立签名归档及离线备份状态核验。操作步骤见[生命周期运行手册](docs/生命周期运行手册.md)。KMS/HSM 保留接口，真实接入延后；这些开发能力不等于生产安全认证或多中心验收。
