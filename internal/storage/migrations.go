@@ -15,6 +15,9 @@ var controlSchema string
 //go:embed workflow_schema.sql
 var workflowSchema string
 
+//go:embed keys_schema.sql
+var keysSchema string
+
 // migrateControl 使用编号和校验和拒绝已应用迁移被静默修改；不自动降级。
 func migrateControl(ctx context.Context, tx *sql.Tx) error {
 	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS keygate.schema_migrations(version integer PRIMARY KEY, checksum text NOT NULL, applied_at timestamptz NOT NULL DEFAULT clock_timestamp())`); err != nil {
@@ -23,7 +26,7 @@ func migrateControl(ctx context.Context, tx *sql.Tx) error {
 	for _, m := range []struct {
 		version int
 		body    string
-	}{{1, controlSchema}, {2, workflowSchema}} {
+	}{{1, controlSchema}, {2, workflowSchema}, {3, keysSchema}} {
 		hash := sha256.Sum256([]byte(m.body))
 		checksum := hex.EncodeToString(hash[:])
 		var existing string

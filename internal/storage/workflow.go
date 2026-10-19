@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -17,15 +16,28 @@ import (
 	"ex-keygate/internal/manifest"
 )
 
-const CreateClient = "client_create"
+const (
+	CreateClient = "client_create"
+	IssueKey     = "key_issue"
+	ActivateKey  = "key_activate"
+	DisableKey   = "key_disable"
+)
 
 type ControlOperation struct {
-	Kind             string `json:"kind"`
-	ClientID         string `json:"clientId"`
-	ExpectedRevision uint64 `json:"expectedRevision,string"`
-	Name             string `json:"name"`
-	ProfileID        string `json:"profileId"`
-	ProfileVersion   uint64 `json:"profileVersion,string"`
+	RecipientSigningKey         string `json:"recipientSigningKey,omitempty"`
+	RecipientSigningFingerprint string `json:"recipientSigningFingerprint,omitempty"`
+	Kind                        string `json:"kind"`
+	ClientID                    string `json:"clientId"`
+	ExpectedRevision            uint64 `json:"expectedRevision,string"`
+	Name                        string `json:"name"`
+	ProfileID                   string `json:"profileId"`
+	ProfileVersion              uint64 `json:"profileVersion,string"`
+	KeyVersion                  uint64 `json:"keyVersion,string,omitempty"`
+	RootID                      string `json:"rootId,omitempty"`
+	RecipientPublicKey          string `json:"recipientPublicKey,omitempty"`
+	RecipientFingerprint        string `json:"recipientFingerprint,omitempty"`
+	NotAfter                    string `json:"notAfter,omitempty"`
+	RetireAt                    string `json:"retireAt,omitempty"`
 }
 
 type controlMember struct {
@@ -84,7 +96,7 @@ func (c *DevelopmentControl) validateOperation(ctx context.Context, tx *sql.Tx, 
 	}
 	switch op.Kind {
 	case CreateClient:
-		if op.ExpectedRevision != 0 || !access.ValidID(op.ProfileID) || op.ProfileVersion == 0 || op.ProfileVersion > 9007199254740991 || len(op.Name) == 0 || len(op.Name) > 128 || !utf8.ValidString(op.Name) || strings.TrimSpace(op.Name) != op.Name {
+		if op.RecipientSigningKey != "" || op.RecipientSigningFingerprint != "" || op.RootID != "" || op.KeyVersion != 0 || op.RecipientPublicKey != "" || op.RecipientFingerprint != "" || op.NotAfter != "" || op.RetireAt != "" || op.ExpectedRevision != 0 || !access.ValidID(op.ProfileID) || op.ProfileVersion == 0 || op.ProfileVersion > 9007199254740991 || len(op.Name) == 0 || len(op.Name) > 128 || !utf8.ValidString(op.Name) || strings.TrimSpace(op.Name) != op.Name {
 			return ErrInvalid
 		}
 		var valid bool
@@ -96,6 +108,8 @@ func (c *DevelopmentControl) validateOperation(ctx context.Context, tx *sql.Tx, 
 			return ErrConflict
 		}
 		return nil
+	case IssueKey, ActivateKey, DisableKey:
+		return c.validateKeyOperation(ctx, tx, op)
 	default:
 		return ErrInvalid
 	}
@@ -423,6 +437,10 @@ func (c *DevelopmentControl) verifyVotes(ctx context.Context, tx *sql.Tx, m cont
 // ExecuteLocal 是可信进程内执行器，不向外部授予 executor 角色；仅消费原清单，无额外执行参数。
 // 本批副作用仅为同库客户端创建，批准、当前资格、唯一执行记录、业务状态和审计同事务提交。
 func (c *DevelopmentControl) ExecuteLocal(ctx context.Context, id, digest, trace string) error {
+	return c.executePrepared(ctx, id, digest, trace, nil)
+}
+
+func (c *DevelopmentControl) executePrepared(ctx context.Context, id, digest, trace string, prepared *preparedKey) error {
 	if !access.ValidID(id) || !access.ValidID(trace) {
 		return ErrInvalid
 	}
@@ -454,16 +472,17 @@ func (c *DevelopmentControl) ExecuteLocal(ctx context.Context, id, digest, trace
 		return e
 	}
 	op := m.Operation
-	if op.Kind != CreateClient {
-		return ErrInvalid
-	}
-	result, e := tx.ExecContext(ctx, `INSERT INTO keygate.clients(environment,client_id,name,client_type,profile_id,profile_version,state) SELECT $1,$2,$3,client_type,profile_id,version,'enabled' FROM keygate.auth_profiles WHERE environment=$1 AND profile_id=$4 AND version=$5 AND enabled`, c.environment, op.ClientID, op.Name, op.ProfileID, op.ProfileVersion)
-	if e != nil {
+	if op.Kind == CreateClient {
+		result, e := tx.ExecContext(ctx, `INSERT INTO keygate.clients(environment,client_id,name,client_type,profile_id,profile_version,state) SELECT $1,$2,$3,client_type,profile_id,version,'enabled' FROM keygate.auth_profiles WHERE environment=$1 AND profile_id=$4 AND version=$5 AND enabled`, c.environment, op.ClientID, op.Name, op.ProfileID, op.ProfileVersion)
+		if e != nil {
+			return e
+		}
+		n, _ := result.RowsAffected()
+		if n != 1 {
+			return ErrConflict
+		}
+	} else if e = c.applyKeyOperation(ctx, tx, m, prepared); e != nil {
 		return e
-	}
-	n, _ := result.RowsAffected()
-	if n != 1 {
-		return ErrConflict
 	}
 	execution, e := controlID()
 	if e != nil {
@@ -481,6 +500,6 @@ func (c *DevelopmentControl) ExecuteLocal(ctx context.Context, id, digest, trace
 	if e = tx.Commit(); e != nil {
 		return e
 	}
-	c.logger.InfoContext(ctx, "获批客户端操作执行完成", "request_id", trace, "approval_id", id, "client_id", op.ClientID, "target_revision", strconv.Itoa(1), "result", "success")
+	c.logger.InfoContext(ctx, "获批本地操作执行完成", "request_id", trace, "approval_id", id, "client_id", op.ClientID, "operation", op.Kind, "result", "success")
 	return nil
 }
