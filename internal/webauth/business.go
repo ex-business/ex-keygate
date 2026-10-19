@@ -159,6 +159,7 @@ func (s *Service) flowRoutes(mux *http.ServeMux) {
 			next(w, r)
 		})
 	}
+	s.browserRoutes(handle)
 	s.providerRoutes(handle)
 	s.lifecycleRoutes(handle)
 	s.auditRoutes(handle)
@@ -367,6 +368,7 @@ func (s *Service) flowRoutes(mux *http.ServeMux) {
 		}
 		businessJSON(w, 200, map[string]any{"authenticated": true, "requestId": requestID(r)})
 	})
+	s.h5Routes(mux)
 	mux.HandleFunc("GET /manage", s.managePage)
 	mux.HandleFunc("GET /manage.js", s.manageScript)
 }

@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
 	"slices"
@@ -38,6 +39,7 @@ type Protector interface {
 	Open(context.Context, keycrypto.Binding, keycrypto.Envelope) ([]byte, error)
 }
 type Config struct {
+	BrowserReturnPaths                                map[string]string
 	Environment                                       config.Environment
 	Identity                                          identity.Config
 	AuthorizationEndpoint, TokenEndpoint, CallbackURL string
@@ -62,6 +64,12 @@ func New(c Config, store *storage.Store, protector Protector) (*Service, error) 
 	if (c.Environment != config.Development && c.Environment != config.Test) || store == nil || protector == nil || c.PolicyVersion == 0 {
 		return nil, ErrConfig
 	}
+	c.BrowserReturnPaths = maps.Clone(c.BrowserReturnPaths)
+	for id, path := range c.BrowserReturnPaths {
+		if !browserReturnPath.MatchString(path) || len(path) > 256 || !browserClientID.MatchString(id) {
+			return nil, ErrConfig
+		}
+	}
 	c.Identity.AllowedACR = slices.Clone(c.Identity.AllowedACR)
 	if c.Identity.TrustedRoots != nil {
 		c.Identity.TrustedRoots = c.Identity.TrustedRoots.Clone()
@@ -81,9 +89,13 @@ func New(c Config, store *storage.Store, protector Protector) (*Service, error) 
 	if err != nil || !safeURL(callback) || callback.Path != "/auth/callback" {
 		return nil, ErrConfig
 	}
-	// The profile binds the root epoch and reviewed policy. Trust-store or other
-	// configuration changes must increment PolicyVersion on all participating nodes.
-	profileBytes, err := json.Marshal([]any{c.Identity.Issuer, c.Identity.JWKSURL, c.Identity.ClientID, c.Identity.AllowedACR, c.Identity.MaxAuthAge, c.AuthorizationEndpoint, c.TokenEndpoint, c.CallbackURL, c.PolicyVersion, c.Environment, protector.RootID()})
+	// 身份摘要绑定根代次和受控策略；信任根等配置变化须同步提高全部节点的 PolicyVersion。
+	// H5 返回路径也纳入摘要，避免不同节点把同一登录事务导向不同入口。
+	profileValues := []any{c.Identity.Issuer, c.Identity.JWKSURL, c.Identity.ClientID, c.Identity.AllowedACR, c.Identity.MaxAuthAge, c.AuthorizationEndpoint, c.TokenEndpoint, c.CallbackURL, c.PolicyVersion, c.Environment, protector.RootID()}
+	if len(c.BrowserReturnPaths) > 0 {
+		profileValues = append(profileValues, c.BrowserReturnPaths)
+	}
+	profileBytes, err := json.Marshal(profileValues)
 	if err != nil {
 		return nil, ErrConfig
 	}
@@ -185,7 +197,8 @@ func (s *Service) Handler() http.Handler {
 		mux.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
-func (s *Service) login(w http.ResponseWriter, r *http.Request) {
+func (s *Service) login(w http.ResponseWriter, r *http.Request) { s.startLogin(w, r, nil) }
+func (s *Service) startLogin(w http.ResponseWriter, r *http.Request, browserContext *storage.BrowserLoginContext) {
 	if r.URL.RawQuery != "" {
 		fail(w, 400)
 		return
@@ -205,7 +218,7 @@ func (s *Service) login(w http.ResponseWriter, r *http.Request) {
 		fail(w, 503)
 		return
 	}
-	record := storage.LoginState{StateHash: stateHash, BrowserHash: hash(browser), ProfileHash: s.profile, Nonce: nonce, VerifierCipher: encrypted}
+	record := storage.LoginState{BrowserContext: browserContext, StateHash: stateHash, BrowserHash: hash(browser), ProfileHash: s.profile, Nonce: nonce, VerifierCipher: encrypted}
 	if err = s.store.CreateLogin(r.Context(), record, audit(id, "anonymous", "login_create", hex.EncodeToString(stateHash[:]), "pending")); err != nil {
 		s.rejected(r, "login_create", "transaction_or_audit_unavailable", hex.EncodeToString(stateHash[:]))
 		fail(w, 503)
@@ -293,6 +306,10 @@ func (s *Service) callback(w http.ResponseWriter, r *http.Request) {
 		fail(w, 401)
 		return
 	}
+	if record.BrowserContext != nil {
+		s.completeBrowserLogin(w, r, principal.ID, principal.AuthenticatedAt, *record.BrowserContext)
+		return
+	}
 	sessionToken := random()
 	sessionHash := hash(sessionToken)
 	session, err := s.store.CreateSession(r.Context(), sessionHash, s.profile, principal.ID, principal.AuthenticatedAt, audit(id, principal.ID, "session_create", hex.EncodeToString(sessionHash[:]), "success"))
@@ -313,8 +330,7 @@ func (s *Service) callback(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`<html lang="zh"><meta charset="utf-8"><p>身份已验证，业务权限按当前授权检查。</p><a href="/manage">进入开发管理</a></html>`))
 		return
 	}
-	// A first-party landing page avoids losing a Strict cookie in the
-	// cross-site IdP redirect chain; the next explicit navigation is same-site.
+	// 第一方确认页让后续显式点击成为同站导航，避免跨站 IdP 跳转链影响 Strict Cookie。
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write([]byte(`<!doctype html><html lang="zh"><meta charset="utf-8"><title>登录完成</title><p>登录成功，身份已验证；尚未授予管理或审批权限。</p><a href="/auth/session">查看当前会话</a></html>`))
 }

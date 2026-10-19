@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="zh">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ExKeyGate H5 认证</title>
+<h1>ExKeyGate H5 认证</h1>
+<p>同源开发演示。客户端需先在管理页登记为 browser，并完成多人审批。浏览器使用独立 HttpOnly 会话，不保存长期共享密钥。</p>
+<p><a href="/manage">客户端管理</a></p>
+<form id="client"><label>H5 客户端 ID <input name="clientId" required maxlength="128" pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,127}"></label><button>选择客户端</button></form>
+<p id="selected"></p>
+<button id="login" type="button" disabled>SSO 登录</button>
+<button id="connect" type="button" disabled>使用已有 SSO 身份建立会话</button>
+<button id="session" type="button" disabled>查询会话</button>
+<button id="authenticate" type="button" disabled>认证当前请求</button>
+<button id="logout" type="button" disabled>退出当前 H5 客户端</button>
+<p>登录回调后点击“继续进入H5应用”。会话不授予管理或业务角色；客户端停用后，认证立即拒绝。</p>
+<pre id="result" role="status"></pre>
+<script type="module" src="/h5.js"></script>
+</html>
