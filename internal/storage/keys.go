@@ -82,6 +82,8 @@ func exactTime(raw string) (time.Time, error) {
 	}
 	return t, e
 }
+// validateKeyOperation 以当前客户端修订、Profile 能力和密钥状态共同约束操作。
+// 签发、激活与停用使用不同参数集合，拒绝将无效额外字段混入待批准清单。
 func (c *DevelopmentControl) validateKeyOperation(ctx context.Context, tx *sql.Tx, op ControlOperation) error {
 	if op.ExpectedRevision == 0 || op.KeyVersion == 0 || op.KeyVersion > 9007199254740991 || op.Name != "" || op.ProfileID != "" || op.ProfileVersion != 0 {
 		return ErrInvalid

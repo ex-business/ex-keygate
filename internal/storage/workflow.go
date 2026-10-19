@@ -435,7 +435,8 @@ func (c *DevelopmentControl) verifyVotes(ctx context.Context, tx *sql.Tx, m cont
 }
 
 // ExecuteLocal 是可信进程内执行器，不向外部授予 executor 角色；仅消费原清单，无额外执行参数。
-// 本批副作用仅为同库客户端创建，批准、当前资格、唯一执行记录、业务状态和审计同事务提交。
+// 客户端创建和密钥状态变更与执行记录、资格检查及审计同事务提交。
+// 签发只接收专用软件执行器的内部预计算结果，普通调用不能自行注入密文或明文。
 func (c *DevelopmentControl) ExecuteLocal(ctx context.Context, id, digest, trace string) error {
 	return c.executePrepared(ctx, id, digest, trace, nil)
 }
