@@ -442,6 +442,17 @@ func (c *DevelopmentControl) ExecuteLocal(ctx context.Context, id, digest, trace
 }
 
 func (c *DevelopmentControl) executePrepared(ctx context.Context, id, digest, trace string, prepared *preparedKey) error {
+	return c.executePreparedAs(ctx, id, digest, trace, prepared, "")
+}
+
+// ExecuteRequested 仅允许原申请人触发获批清单，仍由内部执行器完成受控操作。
+func (c *DevelopmentControl) ExecuteRequested(ctx context.Context, token, id, digest, trace string) error {
+	if token == "" {
+		return ErrDenied
+	}
+	return c.executePreparedAs(ctx, id, digest, trace, nil, token)
+}
+func (c *DevelopmentControl) executePreparedAs(ctx context.Context, id, digest, trace string, prepared *preparedKey, token string) error {
 	if !access.ValidID(id) || !access.ValidID(trace) {
 		return ErrInvalid
 	}
@@ -453,6 +464,11 @@ func (c *DevelopmentControl) executePrepared(ctx context.Context, id, digest, tr
 	r, m, e := c.loadRequest(ctx, tx, id)
 	if e != nil {
 		return e
+	}
+	if token != "" {
+		if e = c.executionActor(ctx, tx, token, m); e != nil {
+			return e
+		}
 	}
 	if subtle.ConstantTimeCompare([]byte(digest), []byte(r.Digest)) != 1 {
 		return ErrConflict

@@ -44,6 +44,7 @@ type Config struct {
 	PolicyVersion                                     uint64
 }
 type Service struct {
+	flow            *developmentFlow
 	logger          *slog.Logger
 	lastRejection   atomic.Int64
 	suppressed      atomic.Uint64
@@ -146,12 +147,19 @@ func csrf(token string) string {
 func fail(w http.ResponseWriter, status int) { http.Error(w, http.StatusText(status), status) }
 func (s *Service) Handler() http.Handler {
 	mux := http.NewServeMux()
+	if s.flow != nil {
+		s.flowRoutes(mux)
+	}
 	mux.HandleFunc("GET /auth/login", s.login)
 	mux.HandleFunc("GET /auth/callback", s.callback)
 	mux.HandleFunc("GET /auth/session", s.session)
 	mux.HandleFunc("POST /auth/logout", s.logout)
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if s.flow != nil {
+			_, _ = w.Write([]byte(`<html lang="zh"><meta charset="utf-8"><title>ExKeyGate 开发流程</title><h1>ExKeyGate 开发流程</h1><p>已显式开启模拟授权；仅供开发测试。</p><a href="/auth/login">通过模拟 SSO 登录</a><p><a href="/manage">客户端与密钥管理</a></p></html>`))
+			return
+		}
 		_, _ = w.Write([]byte(`<!doctype html><html lang="zh"><meta charset="utf-8"><title>ExKeyGate 开发登录</title><h1>ExKeyGate 开发登录</h1><p>这里只验证登录和会话，不授予管理或审批权限。</p><a href="/auth/login">通过 SSO 登录</a><p><a href="/auth/session">查看当前会话</a></p></html>`))
 	})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -294,6 +302,11 @@ func (s *Service) callback(w http.ResponseWriter, r *http.Request) {
 	}
 	setCookie(w, sessionCookie, sessionToken, maxAge, http.SameSiteStrictMode)
 	s.completed(r.Context(), id, principal.ID, hex.EncodeToString(sessionHash[:]), "session_create")
+	if s.flow != nil {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(`<html lang="zh"><meta charset="utf-8"><p>身份已验证，业务权限按当前授权检查。</p><a href="/manage">进入开发管理</a></html>`))
+		return
+	}
 	// A first-party landing page avoids losing a Strict cookie in the
 	// cross-site IdP redirect chain; the next explicit navigation is same-site.
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -311,7 +324,7 @@ func (s *Service) session(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"principalId": session.PrincipalID, "authenticatedAt": session.AuthenticatedAt, "expiresAt": session.ExpiresAt, "csrfToken": csrf(token), "managementAuthorized": false})
+	_ = json.NewEncoder(w).Encode(map[string]any{"principalId": session.PrincipalID, "authenticatedAt": session.AuthenticatedAt, "expiresAt": session.ExpiresAt, "csrfToken": csrf(token), "managementAuthorized": s.managementAuthorized(r, token)})
 }
 func (s *Service) logout(w http.ResponseWriter, r *http.Request) {
 	if r.URL.RawQuery != "" || r.Header.Get("Origin") != s.origin {
@@ -342,4 +355,13 @@ func (s *Service) logout(w http.ResponseWriter, r *http.Request) {
 	setCookie(w, sessionCookie, "", -1, http.SameSiteStrictMode)
 	s.completed(r.Context(), id, session.PrincipalID, hex.EncodeToString(sessionHash[:]), "session_revoke")
 	w.WriteHeader(204)
+}
+
+// managementAuthorized 仅用于界面提示，所有业务读写仍独立查库鉴权。
+func (s *Service) managementAuthorized(r *http.Request, token string) bool {
+	if s.flow == nil {
+		return false
+	}
+	_, e := s.flow.control.Profiles(r.Context(), token)
+	return e == nil
 }

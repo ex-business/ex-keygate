@@ -82,6 +82,7 @@ func exactTime(raw string) (time.Time, error) {
 	}
 	return t, e
 }
+
 // validateKeyOperation 以当前客户端修订、Profile 能力和密钥状态共同约束操作。
 // 签发、激活与停用使用不同参数集合，拒绝将无效额外字段混入待批准清单。
 func (c *DevelopmentControl) validateKeyOperation(ctx context.Context, tx *sql.Tx, op ControlOperation) error {
@@ -188,6 +189,17 @@ func (c *DevelopmentControl) rootEnabled(ctx context.Context, tx *sql.Tx, root s
 // ExecuteIssue 先验证授权，再在独立事务消耗预算，最后重新校验并提交本地结果。
 // 竞争或撤权导致结果丢弃仍消耗预算；不退款，不把软件预计算误当远程幂等副作用。
 func (k *DevelopmentKeys) ExecuteIssue(ctx context.Context, id, digest, trace string) error {
+	return k.executeIssue(ctx, id, digest, trace, "")
+}
+
+// ExecuteIssueRequested 将原申请人的近期会话检查延续到签发最终写回，不信任前端指定执行身份。
+func (k *DevelopmentKeys) ExecuteIssueRequested(ctx context.Context, token, id, digest, trace string) error {
+	if token == "" {
+		return ErrDenied
+	}
+	return k.executeIssue(ctx, id, digest, trace, token)
+}
+func (k *DevelopmentKeys) executeIssue(ctx context.Context, id, digest, trace, token string) error {
 	c := k.control
 	if !access.ValidID(id) || !access.ValidID(trace) {
 		return ErrInvalid
@@ -200,6 +212,11 @@ func (k *DevelopmentKeys) ExecuteIssue(ctx context.Context, id, digest, trace st
 	r, m, e := c.loadRequest(ctx, tx, id)
 	if e != nil {
 		return e
+	}
+	if token != "" {
+		if e = c.executionActor(ctx, tx, token, m); e != nil {
+			return e
+		}
 	}
 	if r.Digest != digest {
 		return ErrConflict
@@ -267,7 +284,7 @@ func (k *DevelopmentKeys) ExecuteIssue(ctx context.Context, id, digest, trace st
 	if _, e = rand.Read(p.proofNonce); e != nil {
 		return e
 	}
-	return c.executePrepared(ctx, id, digest, trace, &p)
+	return c.executePreparedAs(ctx, id, digest, trace, &p, token)
 }
 func (c *DevelopmentControl) applyKeyOperation(ctx context.Context, tx *sql.Tx, m controlManifest, p *preparedKey) error {
 	op := m.Operation

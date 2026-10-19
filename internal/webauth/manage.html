@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ExKeyGate 客户端与密钥</title>
+<h1>ExKeyGate 客户端与密钥</h1>
+<p><strong>开发模拟流程：</strong>客户端管理 → 密钥申请 → 多人审批 → 启用 → 认证 → 停用</p>
+<p>模拟账号仅用于功能验证。申请人 demo-requester；审批人 demo-approver-1、demo-approver-2。每个身份使用独立浏览器会话；这不代表真实的多人身份或 MFA。</p>
+<p><a href="/auth/login">通过 SSO 登录 / 切换身份</a> · <a href="/auth/session">查看会话</a></p>
+<p id="identity">正在读取会话…</p>
+<button id="refresh" type="button">刷新状态</button>
+<button id="logout" type="button">退出</button>
+<h2>1. 登记客户端</h2>
+<form id="create">
+<label>客户端 ID <input name="clientId" required maxlength="128"></label>
+<label>名称 <input name="name" required maxlength="128"></label>
+<label>客户端类型 <select name="profileId" id="profiles"></select></label>
+<button>提交创建申请</button>
+</form>
+<h2>2. 密钥申请、启用与停用</h2>
+<p>后端客户端的密钥由接收方 CLI 加密领取。将 CLI 生成的公开接收方配置粘贴到下方；私钥与共享密钥保存在接收方本机。</p>
+<form id="key-operation">
+<label>客户端 <select name="clientId" id="clients"></select></label>
+<label>密钥版本 <input name="keyVersion" type="number" min="1" value="1" required></label>
+<label>操作 <select name="kind"><option value="key_issue">申请密钥</option><option value="key_activate">申请启用</option><option value="key_disable">申请停用</option></select></label>
+<p><label>接收方公开配置（申请密钥时填写）<br><textarea name="recipient" rows="5" cols="85"></textarea></label></p>
+<p><label>轮换时旧版本退役截止时间（UTC，首次启用留空）<input name="retireAt" placeholder="2026-10-19T12:05:00.000Z"></label></p>
+<button>提交操作申请</button>
+</form>
+<h2>3. 审阅与审批</h2>
+<p>核对清单、摘要、版本和接收方指纹后投票。两名独立审批人通过后，由原申请人点击执行。领取和持有证明完成后，另行发起启用申请。</p>
+<div id="requests"></div>
+<h2>客户端状态</h2>
+<pre id="client-state"></pre>
+<h2>处理结果</h2>
+<pre id="result" role="status"></pre>
+<script src="/manage.js" defer></script>
+</html>

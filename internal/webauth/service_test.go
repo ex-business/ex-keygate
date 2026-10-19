@@ -37,7 +37,8 @@ type testApp struct {
 	service      *Service
 }
 
-func setup(t *testing.T) testApp {
+func setup(t *testing.T) testApp { return setupFlow(t, false) }
+func setupFlow(t *testing.T, enabled bool) testApp {
 	t.Helper()
 	dsn := os.Getenv("KEYGATE_TEST_DATABASE_URL")
 	if dsn == "" {
@@ -82,6 +83,11 @@ func setup(t *testing.T) testApp {
 	service, err := New(Config{Environment: config.Test, Identity: identity.Config{Issuer: idpURL, JWKSURL: idpURL + "/jwks", ClientID: mocksso.ClientID, AllowedACR: []string{mocksso.SimulatedACR}, MaxAuthAge: 5 * time.Minute, TrustedRoots: roots, DevelopmentMode: true}, AuthorizationEndpoint: idpURL + "/authorize", TokenEndpoint: idpURL + "/token", CallbackURL: consoleURL + "/auth/callback", PolicyVersion: 1}, store, protector)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if enabled {
+		if err = service.EnableSimulatedFlow(ctx); err != nil {
+			t.Fatal(err)
+		}
 	}
 	console.Config.Handler = service.Handler()
 	console.TLS = &tls.Config{MinVersion: tls.VersionTLS13}
@@ -136,7 +142,8 @@ func findCookie(t *testing.T, r *http.Response, name string) *http.Cookie {
 	t.Fatal("cookie missing", name)
 	return nil
 }
-func (a testApp) start(t *testing.T) (string, *http.Cookie) {
+func (a testApp) start(t *testing.T) (string, *http.Cookie) { return a.startAs(t, "demo-approver-1") }
+func (a testApp) startAs(t *testing.T, subject string) (string, *http.Cookie) {
 	t.Helper()
 	response := a.request(t, "GET", a.console.URL+"/auth/login", nil, nil, nil)
 	readAndClose(t, response)
@@ -152,7 +159,7 @@ func (a testApp) start(t *testing.T) (string, *http.Cookie) {
 		t.Fatal(err)
 	}
 	values := authorization.Query()
-	values.Set("subject", "demo-approver-1")
+	values.Set("subject", subject)
 	response = a.request(t, "POST", a.idp.URL+"/authorize", nil, values, map[string]string{"Origin": a.idp.URL})
 	readAndClose(t, response)
 	if response.StatusCode != 303 {

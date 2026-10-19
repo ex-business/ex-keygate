@@ -39,6 +39,7 @@ func main() {
 	}
 }
 func run() error {
+	enableFlow := flag.Bool("enable-key-flow", false, "Enable simulated development-only client/key workflow")
 	port := flag.Int("port", 18761, "Loopback console TLS port")
 	databaseFile := flag.String("database-file", "data/dev-console/database-url", "Private disposable development database URL file")
 	ssoFile := flag.String("sso-file", "data/mock-sso/connection.json", "Development mock SSO connection metadata")
@@ -103,7 +104,7 @@ func run() error {
 	if err = db.PingContext(startup); err != nil {
 		return errors.New("development database connection failed")
 	}
-	// This command owns a disposable database; production migrations never run here.
+	// 此命令仅管理专用临时开发数据库；生产迁移不从这里执行。
 	if err = storage.Migrate(startup, db); err != nil {
 		return errors.New("development schema initialization failed")
 	}
@@ -129,6 +130,11 @@ func run() error {
 	if err != nil {
 		return errors.New("development login configuration rejected")
 	}
+	if *enableFlow {
+		if err = service.EnableSimulatedFlow(startup); err != nil {
+			return errors.New("simulated key workflow initialization failed")
+		}
+	}
 	cert, publicCA, err := devtls.Certificate("ExKeyGate Development Console")
 	if err != nil {
 		return err
@@ -150,7 +156,7 @@ func run() error {
 	if err = os.WriteFile(filepath.Join(absolute, "ca.pem"), publicCA, 0600); err != nil {
 		return err
 	}
-	metadata, _ := json.MarshalIndent(map[string]any{"developmentOnly": true, "origin": origin, "loginUrl": origin + "/auth/login", "sessionUrl": origin + "/auth/session", "caFile": filepath.Join(absolute, "ca.pem")}, "", "  ")
+	metadata, _ := json.MarshalIndent(map[string]any{"developmentOnly": true, "origin": origin, "loginUrl": origin + "/auth/login", "sessionUrl": origin + "/auth/session", "caFile": filepath.Join(absolute, "ca.pem"), "keyFlowEnabled": *enableFlow, "manageUrl": origin + "/manage"}, "", "  ")
 	if err = os.WriteFile(filepath.Join(absolute, "connection.json"), metadata, 0600); err != nil {
 		return err
 	}
