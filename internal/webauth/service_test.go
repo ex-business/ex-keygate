@@ -7,6 +7,9 @@ import (
 	"crypto/x509"
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"ex-keygate/internal/access"
+	"ex-keygate/internal/client"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -315,5 +318,45 @@ func TestDuplicateCookiesAndQueryRejected(t *testing.T) {
 	h := sha256.Sum256([]byte("unused"))
 	if _, err = a.store.Session(context.Background(), h, a.service.profile); err == nil {
 		t.Fatal("unknown session accepted")
+	}
+}
+
+// 验证真实回调创建的 Cookie 与人员登记、授权读取使用完全一致的身份和摘要格式。
+func TestLoginConnectsToLocalControl(t *testing.T) {
+	a := setup(t)
+	ctx := context.Background()
+	callback, browser := a.start(t)
+	response := a.request(t, "GET", callback, browser, nil, nil)
+	readAndClose(t, response)
+	if response.StatusCode != 200 {
+		t.Fatal("callback failed")
+	}
+	session := findCookie(t, response, sessionCookie)
+	environment := "control-" + hexToken()
+	control, err := storage.NewDevelopmentControl(config.Test, environment, a.service.profile, a.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner, _ := access.NewPrincipal(a.idp.URL, "demo-approver-1", "person-one")
+	alice, _ := access.NewPrincipal(a.idp.URL, "demo-approver-2", "person-two")
+	bob, _ := access.NewPrincipal(a.idp.URL, "demo-requester", "person-three")
+	b := storage.Bootstrap{Principals: []access.Principal{owner, alice, bob}, Grants: []access.Grant{{PrincipalID: owner.ID, Role: access.Viewer}, {PrincipalID: owner.ID, Role: access.EmergencyOperator}, {PrincipalID: alice.ID, Role: access.Approver}, {PrincipalID: bob.ID, Role: access.Approver}}, Profiles: []client.Profile{{ID: "browser", Version: 1, ClientType: client.Browser, Method: client.FederatedSession, Storage: client.NoSecret, ProviderID: "oidc"}}, Approvers: []string{alice.ID, bob.ID}, Threshold: 2, Witnesses: [2]string{owner.ID, alice.ID}, EvidenceHash: strings.Repeat("a", 64)}
+	if err = control.BootstrapOffline(ctx, b, "bootstrap-"+hexToken()); err != nil {
+		t.Fatal(err)
+	}
+	// 只在测试夹具中建立目标，正式创建将经获批执行，不提供无审批创建入口。
+	_, err = a.db.Exec(`INSERT INTO keygate.clients(environment,client_id,name,client_type,profile_id,profile_version,state) VALUES($1,'console','Console','browser','browser',1,'enabled')`, environment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := control.Client(ctx, session.Value, "console")
+	if err != nil || got.ID != "console" {
+		t.Fatal("real login did not authorize", err)
+	}
+	if err = control.EmergencyDisablePrincipal(ctx, session.Value, owner.ID, "disable-"+hexToken()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = control.Client(ctx, session.Value, "console"); !errors.Is(err, storage.ErrDenied) {
+		t.Fatal("revoked identity retained access", err)
 	}
 }

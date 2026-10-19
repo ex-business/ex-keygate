@@ -147,8 +147,13 @@ func (v *OIDC) VerifyLogin(ctx context.Context, raw, expectedNonce string) (Prin
 	if (len(token.Audience) > 1 && claims.AZP != v.config.ClientID) || (claims.AZP != "" && claims.AZP != v.config.ClientID) {
 		return Principal{}, ErrIdentity
 	}
-	// Bind identity to issuer and immutable subject, never mutable email or token roles.
-	encoded, _ := json.Marshal([]string{token.Issuer, token.Subject})
+	// 身份绑定 issuer 与不可变 subject，统一供登录和离线人员登记使用。
+	return Principal{PrincipalID(token.Issuer, token.Subject), authTime}, nil
+}
+
+// PrincipalID 统一外部身份主键；调用方须先验证 issuer 和 subject 的来源与格式。
+func PrincipalID(issuer, subject string) string {
+	encoded, _ := json.Marshal([]string{issuer, subject})
 	sum := sha256.Sum256(encoded)
-	return Principal{"oidc-" + hex.EncodeToString(sum[:]), authTime}, nil
+	return "oidc-" + hex.EncodeToString(sum[:])
 }

@@ -44,11 +44,14 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 		return err
 	}
 	defer tx.Rollback()
-	// Serialize initial schema creation across deployment jobs.
+	// 串行执行迁移和校验和检查，避免多个部署任务并发修改安全表。
 	if _, err = tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(610847122)"); err != nil {
 		return err
 	}
 	if _, err = tx.ExecContext(ctx, schema); err != nil {
+		return err
+	}
+	if err = migrateControl(ctx, tx); err != nil {
 		return err
 	}
 	return tx.Commit()
