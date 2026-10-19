@@ -25,7 +25,7 @@ func fixture(t *testing.T) (*OIDC, *ecdsa.PrivateKey, map[string]any, string) {
 	nonce := make([]byte, 32)
 	rand.Read(nonce)
 	n := base64.RawURLEncoding.EncodeToString(nonce)
-	config := Config{"https://identity.example", "https://identity.example/keys", "keygate-console", []string{"urn:example:mfa"}, 5 * time.Minute}
+	config := Config{Issuer: "https://identity.example", JWKSURL: "https://identity.example/keys", ClientID: "keygate-console", AllowedACR: []string{"urn:example:mfa"}, MaxAuthAge: 5 * time.Minute}
 	if config.validate() != nil {
 		t.Fatal("invalid test config")
 	}

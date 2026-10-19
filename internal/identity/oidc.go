@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -25,11 +26,13 @@ var ErrIdentity = errors.New("identity verification failed")
 var ErrConfig = errors.New("invalid identity configuration")
 
 type Config struct {
-	Issuer     string
-	JWKSURL    string
-	ClientID   string
-	AllowedACR []string
-	MaxAuthAge time.Duration
+	TrustedRoots    *x509.CertPool
+	DevelopmentMode bool
+	Issuer          string
+	JWKSURL         string
+	ClientID        string
+	AllowedACR      []string
+	MaxAuthAge      time.Duration
 }
 
 func (c Config) validate() error {
@@ -45,7 +48,7 @@ func (c Config) validate() error {
 		return ErrConfig
 	}
 	for _, acr := range c.AllowedACR {
-		if strings.TrimSpace(acr) == "" || len(acr) > 256 {
+		if strings.TrimSpace(acr) == "" || len(acr) > 256 || (strings.HasPrefix(acr, "urn:keygate:dev:") && !c.DevelopmentMode) {
 			return ErrConfig
 		}
 	}
@@ -80,6 +83,9 @@ func NewOIDC(c Config) (*OIDC, error) {
 		return nil, err
 	}
 	client := oidcHTTPClient()
+	if c.TrustedRoots != nil {
+		client.Transport.(boundedTransport).base.(*http.Transport).TLSClientConfig.RootCAs = c.TrustedRoots.Clone()
+	}
 	ctx := oidc.ClientContext(context.Background(), client)
 	keys := oidc.NewRemoteKeySet(ctx, c.JWKSURL)
 	return newOIDC(c, keys, time.Now), nil
