@@ -24,6 +24,7 @@ func (b BrowserLoginContext) valid() bool {
 }
 
 type LoginState struct {
+	StartedAt      time.Time
 	BrowserContext *BrowserLoginContext
 	StateHash      [32]byte
 	BrowserHash    [32]byte
@@ -82,7 +83,7 @@ func (s *Store) ConsumeLogin(ctx context.Context, stateHash, browserHash [32]byt
 	defer tx.Rollback()
 	state := LoginState{StateHash: stateHash, BrowserHash: browserHash, ProfileHash: profile}
 	var browserRaw []byte
-	err = tx.QueryRowContext(ctx, `DELETE FROM keygate.login_states WHERE state_hash=$1 AND browser_hash=$2 AND profile_hash=$3 AND expires_at>clock_timestamp() RETURNING nonce,verifier_cipher,browser_context`, stateHash[:], browserHash[:], profile).Scan(&state.Nonce, &state.VerifierCipher, &browserRaw)
+	err = tx.QueryRowContext(ctx, `DELETE FROM keygate.login_states WHERE state_hash=$1 AND browser_hash=$2 AND profile_hash=$3 AND expires_at>clock_timestamp() RETURNING nonce,verifier_cipher,browser_context,started_at`, stateHash[:], browserHash[:], profile).Scan(&state.Nonce, &state.VerifierCipher, &browserRaw, &state.StartedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return LoginState{}, ErrLogin
 	}

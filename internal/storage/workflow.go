@@ -58,6 +58,7 @@ type controlMember struct {
 	GrantScope    string `json:"grantScope"`
 }
 type controlManifest struct {
+	Sequential     bool                    `json:"sequential,omitempty"`
 	ProviderPolicy *ProviderPolicySnapshot `json:"providerPolicy,omitempty"`
 	ProviderAdmin  *controlMember          `json:"providerAdmin,omitempty"`
 	Schema         string                  `json:"schema"`
@@ -72,11 +73,12 @@ type controlManifest struct {
 	Expires        string                  `json:"expires"`
 }
 type ControlRequest struct {
-	ID       string          `json:"id"`
-	Digest   string          `json:"digest"`
-	Manifest json.RawMessage `json:"manifest"`
-	Decision string          `json:"decision"`
-	Executed bool            `json:"executed"`
+	Progress *ApprovalProgress `json:"progress,omitempty"`
+	ID       string            `json:"id"`
+	Digest   string            `json:"digest"`
+	Manifest json.RawMessage   `json:"manifest"`
+	Decision string            `json:"decision"`
+	Executed bool              `json:"executed"`
 }
 
 func digestBytes(raw []byte) string { h := sha256.Sum256(raw); return hex.EncodeToString(h[:]) }
@@ -223,10 +225,11 @@ func (c *DevelopmentControl) Submit(ctx context.Context, token string, op Contro
 	}
 	var policyVersion int64
 	var threshold int
-	if e = tx.QueryRowContext(ctx, `SELECT version,threshold FROM keygate.control_policies WHERE environment=$1`, c.environment).Scan(&policyVersion, &threshold); e != nil {
+	var sequential bool
+	if e = tx.QueryRowContext(ctx, `SELECT version,threshold,sequential FROM keygate.control_policies WHERE environment=$1`, c.environment).Scan(&policyVersion, &threshold, &sequential); e != nil {
 		return ControlRequest{}, e
 	}
-	rows, e := tx.QueryContext(ctx, `SELECT principal_id FROM keygate.control_policy_members WHERE environment=$1 ORDER BY principal_id`, c.environment)
+	rows, e := tx.QueryContext(ctx, `SELECT principal_id FROM keygate.control_policy_members WHERE environment=$1 ORDER BY ordinal,principal_id`, c.environment)
 	if e != nil {
 		return ControlRequest{}, e
 	}
@@ -249,13 +252,22 @@ func (c *DevelopmentControl) Submit(ctx context.Context, token string, op Contro
 	for _, id := range ids {
 		m, e := c.eligible(ctx, tx, id, access.Approver, op.ClientID)
 		if errors.Is(e, ErrDenied) {
+			if sequential {
+				return ControlRequest{}, ErrDenied
+			}
 			continue
 		}
 		if e != nil {
 			return ControlRequest{}, e
 		}
 		if (op.Kind == ProvisionRoot || op.Kind == EnableProvider) && m.GrantScope != "" {
+			if sequential {
+				return ControlRequest{}, ErrDenied
+			}
 			continue
+		}
+		if sequential && seen[m.PersonID] {
+			return ControlRequest{}, ErrDenied
 		}
 		if !seen[m.PersonID] {
 			members = append(members, m)
@@ -275,7 +287,7 @@ func (c *DevelopmentControl) Submit(ctx context.Context, token string, op Contro
 	if e != nil {
 		return ControlRequest{}, e
 	}
-	m := controlManifest{Schema: "keygate-control-jcs-v1", Environment: c.environment, RequestID: id, Applicant: applicant, Operation: op, PolicyVersion: policyVersion, Threshold: threshold, Approvers: members, Created: now.Format("2006-01-02T15:04:05.000Z"), Expires: expires.Format("2006-01-02T15:04:05.000Z"), ProviderAdmin: admin}
+	m := controlManifest{Sequential: sequential, Schema: "keygate-control-jcs-v1", Environment: c.environment, RequestID: id, Applicant: applicant, Operation: op, PolicyVersion: policyVersion, Threshold: threshold, Approvers: members, Created: now.Format("2006-01-02T15:04:05.000Z"), Expires: expires.Format("2006-01-02T15:04:05.000Z"), ProviderAdmin: admin}
 	if needsProviderSnapshot(op.Kind) {
 		snapshot, e := c.providerSnapshot(ctx, tx, "internal-software")
 		if e != nil {
@@ -301,7 +313,11 @@ func (c *DevelopmentControl) Submit(ctx context.Context, token string, op Contro
 		return ControlRequest{}, e
 	}
 	c.logger.InfoContext(ctx, "变更申请已创建", "request_id", trace, "approval_id", id, "client_id", op.ClientID, "result", "pending")
-	return ControlRequest{id, digest, raw, "pending", false}, nil
+	out := ControlRequest{ID: id, Digest: digest, Manifest: raw, Decision: "pending"}
+	if m.Sequential {
+		out.Progress = &ApprovalProgress{M: m.Threshold, N: len(m.Approvers), CurrentPrincipalID: m.Approvers[0].PrincipalID}
+	}
+	return out, nil
 }
 func (c *DevelopmentControl) loadRequest(ctx context.Context, tx *sql.Tx, id string) (ControlRequest, controlManifest, error) {
 	var r ControlRequest
@@ -321,6 +337,9 @@ func (c *DevelopmentControl) loadRequest(ctx context.Context, tx *sql.Tx, id str
 	canonical, e := manifest.Canonical(m)
 	if e != nil || string(canonical) != string(r.Manifest) || m.Schema != "keygate-control-jcs-v1" || m.Environment != c.environment || m.RequestID != id {
 		return r, m, ErrConflict
+	}
+	if e = c.approvalProgress(ctx, tx, &r, m); e != nil {
+		return r, m, e
 	}
 	return r, m, nil
 }
@@ -434,7 +453,7 @@ func (c *DevelopmentControl) Vote(ctx context.Context, token, id, digest string,
 		return ControlRequest{}, e
 	}
 	defer tx.Rollback()
-	a, e := c.actor(ctx, tx, token, true)
+	a, e := c.identityActor(ctx, tx, token, true)
 	if e != nil {
 		return ControlRequest{}, e
 	}
@@ -454,6 +473,14 @@ func (c *DevelopmentControl) Vote(ctx context.Context, token, id, digest string,
 	member, e := c.currentMember(ctx, tx, m, a.id)
 	if e != nil {
 		return ControlRequest{}, e
+	}
+	if e = c.requireMFAForPurpose(ctx, tx, token, a, id); e != nil {
+		return ControlRequest{}, e
+	}
+	if m.Sequential {
+		if e = c.requireCurrentTurn(ctx, tx, m, a.id); e != nil {
+			return ControlRequest{}, e
+		}
 	}
 	if _, e = tx.ExecContext(ctx, `INSERT INTO keygate.control_votes(environment,request_id,principal_id,person_id,principal_revision,grant_revision,grant_scope,accepted) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, c.environment, id, a.id, a.person, member.Revision, member.GrantRevision, member.GrantScope, accept); e != nil {
 		return ControlRequest{}, e
@@ -476,6 +503,14 @@ func (c *DevelopmentControl) Vote(ctx context.Context, token, id, digest string,
 	}
 	if e = c.audit(ctx, tx, trace, a.id, "control_vote", id, result); e != nil {
 		return ControlRequest{}, e
+	}
+	if e = c.approvalProgress(ctx, tx, &r, m); e != nil {
+		return ControlRequest{}, e
+	}
+	if m.Sequential && r.Decision == "pending" {
+		if e = c.audit(ctx, tx, trace, a.id, "control_handoff", id, "next_person"); e != nil {
+			return ControlRequest{}, e
+		}
 	}
 	if e = tx.Commit(); e != nil {
 		return ControlRequest{}, e

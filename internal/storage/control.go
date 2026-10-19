@@ -144,8 +144,8 @@ func (c *DevelopmentControl) BootstrapOffline(ctx context.Context, b Bootstrap, 
 	if _, err = tx.ExecContext(ctx, `INSERT INTO keygate.control_policies(environment,threshold) VALUES($1,$2)`, c.environment, b.Threshold); err != nil {
 		return err
 	}
-	for _, p := range b.Approvers {
-		if _, err = tx.ExecContext(ctx, `INSERT INTO keygate.control_policy_members(environment,principal_id) VALUES($1,$2)`, c.environment, p); err != nil {
+	for ordinal, p := range b.Approvers {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO keygate.control_policy_members(environment,principal_id,ordinal) VALUES($1,$2,$3)`, c.environment, p, ordinal); err != nil {
 			return err
 		}
 	}
@@ -186,6 +186,19 @@ type controlActor struct {
 // actor 只从有效、指定登录 Profile 的短期会话解析身份，不信任调用者提供的账号字符串。
 // 敏感操作使用数据库时间检查原始 auth_time，开发模拟 MFA 不会被升级为生产强认证。
 func (c *DevelopmentControl) actor(ctx context.Context, tx *sql.Tx, token string, sensitive bool) (controlActor, error) {
+	a, e := c.identityActor(ctx, tx, token, sensitive)
+	if e != nil {
+		return a, e
+	}
+	// 管理和审批在同一权威事务内检查MFA；不能在HTTP层查过后留下撤销与执行之间的竞态。
+	if e = c.requireNativeMFA(ctx, tx, token, a); e != nil {
+		return a, e
+	}
+	return a, nil
+}
+
+// identityActor 仅供身份认证和原生MFA收集凭据使用，不直接授予管理权限。
+func (c *DevelopmentControl) identityActor(ctx context.Context, tx *sql.Tx, token string, sensitive bool) (controlActor, error) {
 	decoded, decodeErr := base64.RawURLEncoding.DecodeString(token)
 	if decodeErr != nil || len(decoded) != 32 || base64.RawURLEncoding.EncodeToString(decoded) != token {
 		return controlActor{}, ErrDenied

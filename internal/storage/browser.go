@@ -56,7 +56,7 @@ func (c *DevelopmentControl) createBrowserSession(ctx context.Context, tx *sql.T
 	if e != nil {
 		return out, e
 	}
-	actor, e := c.actor(ctx, tx, identityToken, true)
+	actor, e := c.identityActor(ctx, tx, identityToken, true)
 	if e != nil {
 		return out, e
 	}
