@@ -22,15 +22,21 @@
 <form id="key-operation">
 <label>客户端 <select name="clientId" id="clients"></select></label>
 <label>密钥版本 <input name="keyVersion" type="number" min="1" value="1" required></label>
-<label>操作 <select name="kind"><option value="key_issue">申请密钥</option><option value="key_activate">申请启用</option><option value="key_disable">申请停用</option></select></label>
+<label>操作 <select name="kind"><option value="key_issue">申请密钥</option><option value="key_activate">申请启用</option><option value="key_disable">申请停用</option><option value="recovery_issue">申请隔离恢复签发</option><option value="recovery_activate">申请正式恢复</option></select></label>
 <p><label>接收方公开配置（申请密钥时填写）<br><textarea name="recipient" rows="5" cols="85"></textarea></label></p>
 <p><label>轮换时旧版本退役截止时间（UTC，首次启用留空）<input name="retireAt" placeholder="2026-10-19T12:05:00.000Z"></label></p>
+<p>隔离恢复时填写同一恢复 ID、事件 ID 和证据 SHA-256；客户端须已停用。准备与正式恢复分别审批。</p>
+<label>恢复 ID <input name="recoveryId" maxlength="128"></label><label>事件 ID <input name="incidentId" maxlength="128"></label><label>证据摘要 <input name="evidenceHash" maxlength="64"></label>
 <button>提交操作申请</button>
 <p><label>轮换来源版本（普通签发留空）<input name="rotationOf" type="number" min="1"></label></p>
 <button id="lifecycle-status" type="button">查看版本、轮换及到期提醒</button>
 <button id="lifecycle-maintain" type="button">收尾已到期任务</button>
 <button id="key-status" type="button">查询密钥状态</button>
 </form>
+<h2>异常恢复</h2>
+<button id="recovery-status" type="button">查询当前客户端恢复任务</button>
+<form id="abort-recovery"><label>恢复 ID <input name="id" required></label><button>中止恢复并保持隔离</button></form>
+<form id="provision-root"><label>新的软件根 ID <input name="rootId" required maxlength="128"></label><button>申请新基础根（需多人批准）</button></form>
 <h2>泄露撤销</h2>
 <p>撤销立即减权且不可恢复；根撤销会隔离依赖客户端。原版本即使误报也不能重新启用。</p>
 <form id="revoke"><label>事件 ID <input name="incidentId" required maxlength="128"></label><label>范围 <select name="scope"><option value="version">当前客户端及版本</option><option value="root">当前基础根及全部依赖</option></select></label><label>原因 <select name="reason"><option value="suspected_leak">疑似泄露</option><option value="confirmed_leak">确认泄露</option><option value="lost_delivery">交付丢失</option><option value="scope_unknown">影响范围未知</option></select></label><button>立即撤销</button></form>

@@ -17,6 +17,8 @@ import (
 
 // developmentFlow 仅在显式启用模拟流程后、启动 HTTP 服务前创建，运行中不切换权限域或根。
 type developmentFlow struct {
+	mu                  sync.Mutex
+	roots               map[string]*storage.DevelopmentKeys
 	control             *storage.DevelopmentControl
 	keys                *storage.DevelopmentKeys
 	environment, rootID string
@@ -106,7 +108,23 @@ func (s *Service) EnableSimulatedFlow(ctx context.Context) error {
 	if e = keys.RegisterRootOffline(ctx, "demo-root-"+hexToken()); e != nil {
 		return e
 	}
-	s.flow = &developmentFlow{control: control, keys: keys, environment: environment, rootID: root}
+	s.flow = &developmentFlow{control: control, keys: keys, environment: environment, rootID: root, roots: map[string]*storage.DevelopmentKeys{root: keys}}
 	s.logger.WarnContext(ctx, "已显式开启模拟密钥业务流程，仅供开发测试，模拟审批不代表真实多人授权", "environment", environment, "result", "enabled")
 	return nil
+}
+
+// 根集合仅保存进程内软件材料；新增根经批准写入后才对当前进程可见。
+func (f *developmentFlow) keySnapshot() ([]*storage.DevelopmentKeys, string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := []*storage.DevelopmentKeys{}
+	for _, k := range f.roots {
+		out = append(out, k)
+	}
+	return out, f.rootID
+}
+func (f *developmentFlow) keyFor(root string) *storage.DevelopmentKeys {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.roots[root]
 }

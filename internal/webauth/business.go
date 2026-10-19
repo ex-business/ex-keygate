@@ -167,7 +167,7 @@ func (s *Service) flowRoutes(mux *http.ServeMux) {
 			s.businessError(w, r, e)
 			return
 		}
-		businessJSON(w, 200, map[string]any{"developmentOnly": true, "simulatedApprovals": true, "environment": f.environment, "rootId": f.rootID, "audience": probeAudience, "profiles": profiles})
+		businessJSON(w, 200, map[string]any{"developmentOnly": true, "simulatedApprovals": true, "environment": f.environment, "rootId": func() string { _, root := f.keySnapshot(); return root }(), "audience": probeAudience, "profiles": profiles})
 	})
 	handle("GET /api/clients", func(w http.ResponseWriter, r *http.Request) {
 		token, ok := s.businessSession(w, r, false)
@@ -323,7 +323,15 @@ func (s *Service) flowRoutes(mux *http.ServeMux) {
 			s.businessError(w, r, e)
 			return
 		}
-		if e := f.keys.ConfirmPossession(r.Context(), r.PathValue("id"), input.MAC, requestID(r)); e != nil {
+		keys, _ := f.keySnapshot()
+		e := storage.ErrDenied
+		for _, k := range keys {
+			e = k.ConfirmPossession(r.Context(), r.PathValue("id"), input.MAC, requestID(r))
+			if e == nil || !errors.Is(e, storage.ErrDenied) {
+				break
+			}
+		}
+		if e != nil {
 			s.businessError(w, r, e)
 			return
 		}
@@ -335,7 +343,15 @@ func (s *Service) flowRoutes(mux *http.ServeMux) {
 			fail(w, 413)
 			return
 		}
-		if e = f.keys.AuthenticateProbe(r.Context(), r, body, probeAudience); e != nil {
+		keys, _ := f.keySnapshot()
+		e = storage.ErrDenied
+		for _, k := range keys {
+			e = k.AuthenticateProbe(r.Context(), r, body, probeAudience)
+			if e == nil || !errors.Is(e, storage.ErrDenied) {
+				break
+			}
+		}
+		if e != nil {
 			if errors.Is(e, storage.ErrDenied) {
 				fail(w, 401)
 			} else {
@@ -373,8 +389,27 @@ func (s *Service) executeBusiness(w http.ResponseWriter, r *http.Request) {
 		s.businessError(w, r, storage.ErrInvalid)
 		return
 	}
-	if data.Operation.Kind == storage.IssueKey {
-		e = s.flow.keys.ExecuteIssueRequested(r.Context(), token, id, input.Digest, requestID(r))
+	if data.Operation.Kind == storage.IssueKey || data.Operation.Kind == storage.RecoverIssue {
+		k := s.flow.keyFor(data.Operation.RootID)
+		if k == nil {
+			e = storage.ErrDenied
+		} else {
+			e = k.ExecuteIssueRequested(r.Context(), token, id, input.Digest, requestID(r))
+		}
+	} else if data.Operation.Kind == storage.ProvisionRoot {
+		// 同进程重试复用已注册材料；跨进程不能猜测或重新生成同名根。
+		s.flow.mu.Lock()
+		if record.Executed && s.flow.roots[data.Operation.RootID] != nil {
+			e = s.flow.control.ExecuteRequested(r.Context(), token, id, input.Digest, requestID(r))
+		} else {
+			var k *storage.DevelopmentKeys
+			k, e = s.flow.control.ProvisionSoftwareRootRequested(r.Context(), token, id, input.Digest, requestID(r), s.protector.RootID())
+			if e == nil {
+				s.flow.roots[data.Operation.RootID] = k
+				s.flow.rootID = data.Operation.RootID
+			}
+		}
+		s.flow.mu.Unlock()
 	} else {
 		e = s.flow.control.ExecuteRequested(r.Context(), token, id, input.Digest, requestID(r))
 	}

@@ -17,13 +17,19 @@ import (
 )
 
 const (
-	CreateClient = "client_create"
-	IssueKey     = "key_issue"
-	ActivateKey  = "key_activate"
-	DisableKey   = "key_disable"
+	CreateClient    = "client_create"
+	IssueKey        = "key_issue"
+	ActivateKey     = "key_activate"
+	DisableKey      = "key_disable"
+	RecoverIssue    = "recovery_issue"
+	RecoverActivate = "recovery_activate"
+	ProvisionRoot   = "root_provision"
 )
 
 type ControlOperation struct {
+	RecoveryID                  string `json:"recoveryId,omitempty"`
+	IncidentID                  string `json:"incidentId,omitempty"`
+	EvidenceHash                string `json:"evidenceHash,omitempty"`
 	RotationOf                  uint64 `json:"rotationOf,string,omitempty"`
 	RecipientSigningKey         string `json:"recipientSigningKey,omitempty"`
 	RecipientSigningFingerprint string `json:"recipientSigningFingerprint,omitempty"`
@@ -95,8 +101,33 @@ func (c *DevelopmentControl) validateOperation(ctx context.Context, tx *sql.Tx, 
 	if !access.ValidID(op.ClientID) || op.ExpectedRevision > 9007199254740991 {
 		return ErrInvalid
 	}
+	if op.Kind != RecoverIssue && op.Kind != RecoverActivate && (op.RecoveryID != "" || op.IncidentID != "" || op.EvidenceHash != "") {
+		return ErrInvalid
+	}
 	switch op.Kind {
+	case ProvisionRoot:
+		if op.ClientID != "root-management" || !access.ValidID(op.RootID) || op.KeyVersion != 0 || op.RotationOf != 0 || op.ExpectedRevision != 0 || op.Name != "" || op.ProfileID != "" || op.ProfileVersion != 0 || op.RecipientPublicKey != "" || op.RecipientFingerprint != "" || op.RecipientSigningKey != "" || op.RecipientSigningFingerprint != "" || op.NotAfter != "" || op.RetireAt != "" {
+			return ErrInvalid
+		}
+		var n int
+		if e := tx.QueryRowContext(ctx, `SELECT count(*) FROM keygate.client_roots WHERE environment=$1`, c.environment).Scan(&n); e != nil {
+			return e
+		}
+		if n >= 16 {
+			return ErrConflict
+		}
+		var exists bool
+		if e := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM keygate.root_budgets WHERE root_id=$1)`, op.RootID).Scan(&exists); e != nil {
+			return e
+		}
+		if exists {
+			return ErrConflict
+		}
+		return nil
 	case CreateClient:
+		if op.ClientID == "root-management" {
+			return ErrInvalid
+		}
 		if op.RotationOf != 0 || op.RecipientSigningKey != "" || op.RecipientSigningFingerprint != "" || op.RootID != "" || op.KeyVersion != 0 || op.RecipientPublicKey != "" || op.RecipientFingerprint != "" || op.NotAfter != "" || op.RetireAt != "" || op.ExpectedRevision != 0 || !access.ValidID(op.ProfileID) || op.ProfileVersion == 0 || op.ProfileVersion > 9007199254740991 || len(op.Name) == 0 || len(op.Name) > 128 || !utf8.ValidString(op.Name) || strings.TrimSpace(op.Name) != op.Name {
 			return ErrInvalid
 		}
@@ -109,7 +140,7 @@ func (c *DevelopmentControl) validateOperation(ctx context.Context, tx *sql.Tx, 
 			return ErrConflict
 		}
 		return nil
-	case IssueKey, ActivateKey, DisableKey:
+	case IssueKey, ActivateKey, DisableKey, RecoverIssue, RecoverActivate:
 		return c.validateKeyOperation(ctx, tx, op)
 	default:
 		return ErrInvalid
@@ -138,6 +169,9 @@ func (c *DevelopmentControl) Submit(ctx context.Context, token string, op Contro
 	applicant, e := c.eligible(ctx, tx, a.id, access.Requester, op.ClientID)
 	if e != nil {
 		return ControlRequest{}, e
+	}
+	if op.Kind == ProvisionRoot && applicant.GrantScope != "" {
+		return ControlRequest{}, ErrDenied
 	}
 	var previous, previousDigest string
 	e = tx.QueryRowContext(ctx, `SELECT request_id,parameters_digest FROM keygate.control_idempotency WHERE environment=$1 AND principal_id=$2 AND idempotency_key=$3`, c.environment, a.id, idempotency).Scan(&previous, &previousDigest)
@@ -192,6 +226,9 @@ func (c *DevelopmentControl) Submit(ctx context.Context, token string, op Contro
 		}
 		if e != nil {
 			return ControlRequest{}, e
+		}
+		if op.Kind == ProvisionRoot && m.GrantScope != "" {
+			continue
 		}
 		if !seen[m.PersonID] {
 			members = append(members, m)
@@ -475,6 +512,11 @@ func (c *DevelopmentControl) executePreparedAs(ctx context.Context, id, digest, 
 		return ErrConflict
 	}
 	if r.Executed {
+		if prepared != nil && prepared.newRoot != nil {
+			if e = prepared.newRoot.rootMatches(ctx, tx); e != nil {
+				return e
+			}
+		}
 		return tx.Commit()
 	}
 	if r.Decision != "approved" {

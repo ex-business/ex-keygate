@@ -10,6 +10,7 @@ import (
 	"crypto/x509"
 	"database/sql"
 	"encoding/base64"
+	"encoding/hex"
 	"strconv"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 )
 
 type preparedKey struct {
+	newRoot                                                       *DevelopmentKeys
 	issueID, digest                                               string
 	envelope                                                      keycrypto.Envelope
 	delivery, recipient, signingRecipient, claimNonce, proofNonce []byte
@@ -99,7 +101,21 @@ func (c *DevelopmentControl) validateKeyOperation(ctx context.Context, tx *sql.T
 	if revision != op.ExpectedRevision {
 		return ErrConflict
 	}
-	if op.Kind != DisableKey && (state != "enabled" || !profileEnabled || method != "hmac_sha256" || provider != "internal-software") {
+	recovery := op.Kind == RecoverIssue || op.Kind == RecoverActivate
+	expectedState := "enabled"
+	if recovery {
+		expectedState = "disabled"
+		if !access.ValidID(op.RecoveryID) || !access.ValidID(op.IncidentID) || len(op.EvidenceHash) != 64 {
+			return ErrInvalid
+		}
+		if _, e := hex.DecodeString(op.EvidenceHash); e != nil {
+			return ErrInvalid
+		}
+		if op.RotationOf != 0 {
+			return ErrInvalid
+		}
+	}
+	if op.Kind != DisableKey && (state != expectedState || !profileEnabled || method != "hmac_sha256" || provider != "internal-software") {
 		return ErrDenied
 	}
 	now, e := controlNow(ctx, tx)
@@ -107,12 +123,21 @@ func (c *DevelopmentControl) validateKeyOperation(ctx context.Context, tx *sql.T
 		return e
 	}
 	switch op.Kind {
-	case IssueKey:
+	case IssueKey, RecoverIssue:
+		if recovery {
+			var exists bool
+			if e := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM keygate.recovery_tasks WHERE environment=$1 AND (recovery_id=$2 OR (client_id=$3 AND state IN ('preparing','staged'))))`, c.environment, op.RecoveryID, op.ClientID).Scan(&exists); e != nil {
+				return e
+			}
+			if exists {
+				return ErrConflict
+			}
+		}
 		var open bool
 		if e := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM keygate.rotation_tasks WHERE environment=$1 AND client_id=$2 AND state IN ('preparing','overlap'))`, c.environment, op.ClientID).Scan(&open); e != nil {
 			return e
 		}
-		if open {
+		if open && !recovery {
 			return ErrConflict
 		}
 		if op.RotationOf != 0 {
@@ -148,7 +173,7 @@ func (c *DevelopmentControl) validateKeyOperation(ctx context.Context, tx *sql.T
 		if op.KeyVersion != next {
 			return ErrConflict
 		}
-	case ActivateKey, DisableKey:
+	case ActivateKey, DisableKey, RecoverActivate:
 		if op.RotationOf != 0 || op.RecipientSigningKey != "" || op.RecipientSigningFingerprint != "" || op.RootID != "" || op.NotAfter != "" || op.RecipientPublicKey != "" || op.RecipientFingerprint != "" {
 			return ErrInvalid
 		}
@@ -168,6 +193,16 @@ func (c *DevelopmentControl) validateKeyOperation(ctx context.Context, tx *sql.T
 		}
 		if keyState != "staged" || !claimed || !rootEnabled || now.Before(before) || !now.Before(after) {
 			return ErrConflict
+		}
+		if recovery {
+			var valid bool
+			if e := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM keygate.recovery_tasks WHERE environment=$1 AND recovery_id=$2 AND client_id=$3 AND key_version=$4 AND state='staged' AND incident_id=$5 AND evidence_hash=$6 AND prepared_revision+1=$7)`, c.environment, op.RecoveryID, op.ClientID, op.KeyVersion, op.IncidentID, op.EvidenceHash, op.ExpectedRevision).Scan(&valid); e != nil {
+				return e
+			}
+			if !valid || op.RetireAt != "" {
+				return ErrConflict
+			}
+			return nil
 		}
 		var active, retiring int
 		e = tx.QueryRowContext(ctx, `SELECT count(*) FILTER(WHERE state='active' AND not_after>clock_timestamp()),count(*) FILTER(WHERE state='retiring' AND not_after>clock_timestamp()) FROM keygate.key_versions WHERE environment=$1 AND client_id=$2`, c.environment, op.ClientID).Scan(&active, &retiring)
@@ -247,7 +282,7 @@ func (k *DevelopmentKeys) executeIssue(ctx context.Context, id, digest, trace, t
 	if r.Executed {
 		return tx.Commit()
 	}
-	if r.Decision != "approved" || m.Operation.Kind != IssueKey || m.Operation.RootID != k.rootID {
+	if r.Decision != "approved" || (m.Operation.Kind != IssueKey && m.Operation.Kind != RecoverIssue) || m.Operation.RootID != k.rootID {
 		return ErrDenied
 	}
 	if e = c.liveManifest(ctx, tx, m); e != nil {
@@ -312,7 +347,19 @@ func (k *DevelopmentKeys) executeIssue(ctx context.Context, id, digest, trace, t
 func (c *DevelopmentControl) applyKeyOperation(ctx context.Context, tx *sql.Tx, m controlManifest, p *preparedKey) error {
 	op := m.Operation
 	switch op.Kind {
-	case IssueKey:
+	case ProvisionRoot:
+		if p == nil || p.newRoot == nil || p.issueID != m.RequestID || p.digest != digestBytesMust(m) || p.newRoot.rootID != op.RootID {
+			return ErrDenied
+		}
+		if _, e := tx.ExecContext(ctx, `INSERT INTO keygate.root_budgets(root_id,maximum) VALUES($1,100000)`, op.RootID); e != nil {
+			return e
+		}
+		if _, e := tx.ExecContext(ctx, `INSERT INTO keygate.client_roots(root_id,environment,purpose,key_fingerprint) VALUES($1,$2,'client_auth',$3)`, op.RootID, c.environment, p.newRoot.fingerprint); e != nil {
+			return e
+		}
+		return nil
+
+	case IssueKey, RecoverIssue:
 		if p == nil || p.issueID != m.RequestID || p.digest != digestBytesMust(m) || p.envelope.RootID != op.RootID {
 			return ErrDenied
 		}
@@ -325,10 +372,46 @@ func (c *DevelopmentControl) applyKeyOperation(ctx context.Context, tx *sql.Tx, 
 		if e != nil {
 			return e
 		}
+		if op.Kind == RecoverIssue {
+			if _, e = tx.ExecContext(ctx, `UPDATE keygate.rotation_tasks SET state='failed',completed_at=clock_timestamp() WHERE environment=$1 AND client_id=$2 AND state IN ('preparing','overlap')`, c.environment, op.ClientID); e != nil {
+				return e
+			}
+			if _, e = tx.ExecContext(ctx, `INSERT INTO keygate.recovery_tasks(environment,recovery_id,client_id,incident_id,evidence_hash,issue_id,key_version,prepared_revision,state) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'preparing')`, c.environment, op.RecoveryID, op.ClientID, op.IncidentID, op.EvidenceHash, m.RequestID, op.KeyVersion, op.ExpectedRevision+1); e != nil {
+				return e
+			}
+		}
 		if op.RotationOf != 0 {
 			if _, e = tx.ExecContext(ctx, `INSERT INTO keygate.rotation_tasks(environment,client_id,issue_id,old_version,new_version) VALUES($1,$2,$3,$4,$5)`, c.environment, op.ClientID, m.RequestID, op.RotationOf, op.KeyVersion); e != nil {
 				return e
 			}
+		}
+	case RecoverActivate:
+		// 恢复保持关闭直到最终原子事务，所有旧版本永久撤销，不给疑似泄露材料过渡期。
+		if _, e := tx.ExecContext(ctx, `UPDATE keygate.key_versions SET state='compromised' WHERE environment=$1 AND client_id=$2 AND version<>$3`, c.environment, op.ClientID, op.KeyVersion); e != nil {
+			return e
+		}
+		revocation, e := controlID()
+		if e != nil {
+			return e
+		}
+		if _, e = tx.ExecContext(ctx, `INSERT INTO keygate.revocations(environment,incident_id,client_id,key_version,root_id,reason,actor_id,parameters_digest) VALUES($1,$2,$3,0,'','scope_unknown','executor-service',$4)`, c.environment, revocation, op.ClientID, digestBytesMust(m)); e != nil {
+			return e
+		}
+		result, e := tx.ExecContext(ctx, `UPDATE keygate.key_versions SET state='active' WHERE environment=$1 AND client_id=$2 AND version=$3 AND state='staged' AND claimed_at IS NOT NULL AND not_before<=clock_timestamp() AND not_after>clock_timestamp()`, c.environment, op.ClientID, op.KeyVersion)
+		if e != nil {
+			return e
+		}
+		if e = oneResult(result); e != nil {
+			return e
+		}
+		if _, e = tx.ExecContext(ctx, `UPDATE keygate.clients SET state='enabled' WHERE environment=$1 AND client_id=$2 AND state='disabled'`, c.environment, op.ClientID); e != nil {
+			return e
+		}
+		if _, e = tx.ExecContext(ctx, `UPDATE keygate.recovery_tasks SET state='completed',finished_at=clock_timestamp() WHERE environment=$1 AND recovery_id=$2 AND state='staged'`, c.environment, op.RecoveryID); e != nil {
+			return e
+		}
+		if _, e = tx.ExecContext(ctx, `UPDATE keygate.rotation_tasks SET state='failed',completed_at=clock_timestamp() WHERE environment=$1 AND client_id=$2 AND state IN ('preparing','overlap')`, c.environment, op.ClientID); e != nil {
+			return e
 		}
 	case ActivateKey:
 		// 先清理已按时间失效的状态占位，再原子切换旧新版本，避免多个 ACTIVE 或 RETIRING。
@@ -394,7 +477,7 @@ type keyDelivery struct {
 func (c *DevelopmentControl) delivery(ctx context.Context, tx *sql.Tx, issue string) (keyDelivery, error) {
 	var k keyDelivery
 	e := tx.QueryRowContext(ctx, `SELECT k.client_id,k.version,k.state,k.root_id,k.format,k.recipient_fingerprint,k.ciphertext,k.delivery_ciphertext,k.recipient_der,k.claim_nonce,k.proof_nonce,k.claimed_at IS NOT NULL,
- c.state='enabled' AND p.enabled AND r.enabled AND k.not_before<=clock_timestamp() AND k.not_after>clock_timestamp() AND k.claim_expires>clock_timestamp(),k.recipient_signing_der,k.recipient_signing_fingerprint
+ (c.state='enabled' OR (c.state='disabled' AND EXISTS(SELECT 1 FROM keygate.recovery_tasks t WHERE t.environment=k.environment AND t.issue_id=k.issue_id AND t.state='preparing' AND t.prepared_revision=c.revision))) AND p.enabled AND r.enabled AND k.not_before<=clock_timestamp() AND k.not_after>clock_timestamp() AND k.claim_expires>clock_timestamp(),k.recipient_signing_der,k.recipient_signing_fingerprint
  FROM keygate.key_versions k JOIN keygate.clients c ON c.environment=k.environment AND c.client_id=k.client_id
  JOIN keygate.auth_profiles p ON p.environment=c.environment AND p.profile_id=c.profile_id AND p.version=c.profile_version
  JOIN keygate.client_roots r ON r.environment=k.environment AND r.root_id=k.root_id
@@ -529,6 +612,9 @@ func (k *DevelopmentKeys) ConfirmPossession(ctx context.Context, issue string, m
 		return e
 	}
 	if e = oneResult(result); e != nil {
+		return e
+	}
+	if _, e = tx.ExecContext(ctx, `UPDATE keygate.recovery_tasks SET state='staged' WHERE environment=$1 AND issue_id=$2 AND state='preparing'`, c.environment, issue); e != nil {
 		return e
 	}
 	if _, e = tx.ExecContext(ctx, `UPDATE keygate.clients SET revision=revision+1 WHERE environment=$1 AND client_id=$2`, c.environment, d.client); e != nil {

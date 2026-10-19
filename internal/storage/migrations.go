@@ -24,6 +24,9 @@ var lifecycleSchema string
 //go:embed revocation_schema.sql
 var revocationSchema string
 
+//go:embed recovery_schema.sql
+var recoverySchema string
+
 // migrateControl 使用编号和校验和拒绝已应用迁移被静默修改；不自动降级。
 func migrateControl(ctx context.Context, tx *sql.Tx) error {
 	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS keygate.schema_migrations(version integer PRIMARY KEY, checksum text NOT NULL, applied_at timestamptz NOT NULL DEFAULT clock_timestamp())`); err != nil {
@@ -32,7 +35,7 @@ func migrateControl(ctx context.Context, tx *sql.Tx) error {
 	for _, m := range []struct {
 		version int
 		body    string
-	}{{1, controlSchema}, {2, workflowSchema}, {3, keysSchema}, {4, lifecycleSchema}, {5, revocationSchema}} {
+	}{{1, controlSchema}, {2, workflowSchema}, {3, keysSchema}, {4, lifecycleSchema}, {5, revocationSchema}, {6, recoverySchema}} {
 		hash := sha256.Sum256([]byte(m.body))
 		checksum := hex.EncodeToString(hash[:])
 		var existing string

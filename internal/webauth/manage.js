@@ -91,7 +91,8 @@ document.getElementById('key-operation').addEventListener('submit', event => {
     const client = clients.find(item => item.id === data.get('clientId'));
     if (!client) throw new Error('请先创建客户端并刷新状态');
     const operation = {kind: data.get('kind'), clientId: client.id, expectedRevision: client.revision, name: '', profileId: '', profileVersion: '0', keyVersion: data.get('keyVersion')};
-    if (operation.kind === 'key_issue') {
+    if (operation.kind.startsWith('recovery_')) for (const field of ['recoveryId','incidentId','evidenceHash']) operation[field]=data.get(field);
+    if (operation.kind === 'key_issue' || operation.kind === 'recovery_issue') {
       if (data.get('rotationOf')) operation.rotationOf = data.get('rotationOf');
       const recipient = JSON.parse(data.get('recipient'));
       for (const key of ['recipientPublicKey', 'recipientFingerprint', 'recipientSigningKey', 'recipientSigningFingerprint']) {
@@ -121,3 +122,7 @@ document.getElementById('lifecycle-status').addEventListener('click', () => subm
 document.getElementById('lifecycle-maintain').addEventListener('click', () => submit(() => call('/api/lifecycle/maintain', 'POST', {})));
 
 document.getElementById('revoke').addEventListener('submit',event=>{event.preventDefault();const d=new FormData(event.currentTarget);submit(()=>{const key=new FormData(document.getElementById('key-operation'));const root=d.get('scope')==='root';return call('/api/revocations','POST',{incidentId:d.get('incidentId'),reason:d.get('reason'),clientId:root?'':key.get('clientId'),keyVersion:root?'0':key.get('keyVersion'),rootId:root?config.rootId:''});});});
+
+document.getElementById('recovery-status').addEventListener('click',()=>submit(()=>call(`/api/clients/${encodeURIComponent(document.getElementById('clients').value)}/recoveries`)));
+document.getElementById('abort-recovery').addEventListener('submit',e=>{e.preventDefault();submit(()=>call(`/api/recoveries/${encodeURIComponent(new FormData(e.target).get('id'))}/abort`,'POST',{}));});
+document.getElementById('provision-root').addEventListener('submit',e=>{e.preventDefault();submit(()=>call('/api/requests','POST',{kind:'root_provision',clientId:'root-management',expectedRevision:'0',name:'',profileId:'',profileVersion:'0',rootId:new FormData(e.target).get('rootId')}));});
