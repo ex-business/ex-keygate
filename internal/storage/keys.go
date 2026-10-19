@@ -91,6 +91,11 @@ func (c *DevelopmentControl) validateKeyOperation(ctx context.Context, tx *sql.T
 	if op.ExpectedRevision == 0 || op.KeyVersion == 0 || op.KeyVersion > 9007199254740991 || op.Name != "" || op.ProfileID != "" || op.ProfileVersion != 0 {
 		return ErrInvalid
 	}
+	if op.Kind != DisableKey {
+		if e := c.requireInternalProvider(ctx, tx); e != nil {
+			return e
+		}
+	}
 	var revision uint64
 	var state, method, provider string
 	var profileEnabled bool
@@ -479,6 +484,9 @@ type keyDelivery struct {
 
 func (c *DevelopmentControl) delivery(ctx context.Context, tx *sql.Tx, issue string) (keyDelivery, error) {
 	var k keyDelivery
+	if e := c.requireInternalProvider(ctx, tx); e != nil {
+		return k, e
+	}
 	e := tx.QueryRowContext(ctx, `SELECT k.client_id,k.version,k.state,k.root_id,k.format,k.recipient_fingerprint,k.ciphertext,k.delivery_ciphertext,k.recipient_der,k.claim_nonce,k.proof_nonce,k.claimed_at IS NOT NULL,
  (c.state='enabled' OR (c.state='disabled' AND EXISTS(SELECT 1 FROM keygate.recovery_tasks t WHERE t.environment=k.environment AND t.issue_id=k.issue_id AND t.state='preparing' AND t.prepared_revision=c.revision))) AND p.enabled AND r.enabled AND k.not_before<=clock_timestamp() AND k.not_after>clock_timestamp() AND k.claim_expires>clock_timestamp(),k.recipient_signing_der,k.recipient_signing_fingerprint
  FROM keygate.key_versions k JOIN keygate.clients c ON c.environment=k.environment AND c.client_id=k.client_id

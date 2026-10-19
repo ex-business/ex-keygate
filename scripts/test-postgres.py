@@ -33,6 +33,13 @@ try:
     state = json.loads(subprocess.check_output(["docker", "inspect", name]))[0]
     port = state["NetworkSettings"]["Ports"]["5432/tcp"][0]["HostPort"]
     env["KEYGATE_TEST_DATABASE_URL"] = "postgres://postgres:" + env["POSTGRES_PASSWORD"] + "@127.0.0.1:" + port + "/keygate_test?sslmode=disable"
-    subprocess.run(["go", "test", "-race", "-count=1", "./..."], cwd=root, env=env, check=True, timeout=180)
+    # 各测试包执行全库迁移、故障注入及停服恢复，使用独立数据库避免跨包共享维护状态。
+    packages = subprocess.check_output(["go", "list", "./..."], cwd=root, text=True).splitlines()
+    for index, package in enumerate(packages):
+        database = "keygate_test"
+        subprocess.run(["docker", "exec", name, "dropdb", "-U", "postgres", database], check=True)
+        subprocess.run(["docker", "exec", name, "createdb", "-U", "postgres", database], check=True)
+        env["KEYGATE_TEST_DATABASE_URL"] = "postgres://postgres:" + env["POSTGRES_PASSWORD"] + "@127.0.0.1:" + port + "/" + database + "?sslmode=disable"
+        subprocess.run(["go", "test", "-race", "-count=1", package], cwd=root, env=env, check=True, timeout=180)
 finally:
     subprocess.run(["docker", "rm", "-f", name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

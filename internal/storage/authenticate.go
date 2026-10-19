@@ -44,6 +44,9 @@ func (k *DevelopmentKeys) authenticateProbe(ctx context.Context, r *http.Request
 		return e
 	}
 	defer tx.Rollback()
+	if e = c.requireInternalProvider(ctx, tx); e != nil {
+		return e
+	}
 	var format string
 	var cipher []byte
 	e = tx.QueryRowContext(ctx, `SELECT k.format,k.ciphertext FROM keygate.key_versions k

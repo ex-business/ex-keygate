@@ -326,7 +326,7 @@ func (c *DevelopmentControl) auditScope(ctx context.Context, tx *sql.Tx, action,
 	if e := tx.QueryRowContext(ctx, query, c.environment, target).Scan(&scope); e != nil {
 		return "", e
 	}
-	if scope == "root-management" {
+	if scope == "root-management" || scope == "provider-management" {
 		scope = ""
 	}
 	return scope, nil

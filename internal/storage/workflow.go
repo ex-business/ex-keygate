@@ -27,6 +27,8 @@ const (
 )
 
 type ControlOperation struct {
+	ProviderID                  string `json:"providerId,omitempty"`
+	ProviderDigest              string `json:"providerDigest,omitempty"`
 	RotationReason              string `json:"rotationReason,omitempty"`
 	RecoveryID                  string `json:"recoveryId,omitempty"`
 	IncidentID                  string `json:"incidentId,omitempty"`
@@ -56,16 +58,18 @@ type controlMember struct {
 	GrantScope    string `json:"grantScope"`
 }
 type controlManifest struct {
-	Schema        string           `json:"schema"`
-	Environment   string           `json:"environment"`
-	RequestID     string           `json:"requestId"`
-	Applicant     controlMember    `json:"applicant"`
-	Operation     ControlOperation `json:"operation"`
-	PolicyVersion int64            `json:"policyVersion,string"`
-	Threshold     int              `json:"threshold"`
-	Approvers     []controlMember  `json:"approvers"`
-	Created       string           `json:"created"`
-	Expires       string           `json:"expires"`
+	ProviderPolicy *ProviderPolicySnapshot `json:"providerPolicy,omitempty"`
+	ProviderAdmin  *controlMember          `json:"providerAdmin,omitempty"`
+	Schema         string                  `json:"schema"`
+	Environment    string                  `json:"environment"`
+	RequestID      string                  `json:"requestId"`
+	Applicant      controlMember           `json:"applicant"`
+	Operation      ControlOperation        `json:"operation"`
+	PolicyVersion  int64                   `json:"policyVersion,string"`
+	Threshold      int                     `json:"threshold"`
+	Approvers      []controlMember         `json:"approvers"`
+	Created        string                  `json:"created"`
+	Expires        string                  `json:"expires"`
 }
 type ControlRequest struct {
 	ID       string          `json:"id"`
@@ -102,6 +106,9 @@ func (c *DevelopmentControl) validateOperation(ctx context.Context, tx *sql.Tx, 
 	if !access.ValidID(op.ClientID) || op.ExpectedRevision > 9007199254740991 {
 		return ErrInvalid
 	}
+	if op.Kind != EnableProvider && (op.ProviderID != "" || op.ProviderDigest != "") {
+		return ErrInvalid
+	}
 	if op.RotationReason != "" && (op.Kind != IssueKey || op.RotationOf == 0) {
 		return ErrInvalid
 	}
@@ -109,7 +116,12 @@ func (c *DevelopmentControl) validateOperation(ctx context.Context, tx *sql.Tx, 
 		return ErrInvalid
 	}
 	switch op.Kind {
+	case EnableProvider:
+		return c.validateProviderOperation(ctx, tx, op)
 	case ProvisionRoot:
+		if e := c.requireInternalProvider(ctx, tx); e != nil {
+			return e
+		}
 		if op.ClientID != "root-management" || !access.ValidID(op.RootID) || op.KeyVersion != 0 || op.RotationOf != 0 || op.ExpectedRevision != 0 || op.Name != "" || op.ProfileID != "" || op.ProfileVersion != 0 || op.RecipientPublicKey != "" || op.RecipientFingerprint != "" || op.RecipientSigningKey != "" || op.RecipientSigningFingerprint != "" || op.NotAfter != "" || op.RetireAt != "" {
 			return ErrInvalid
 		}
@@ -129,7 +141,7 @@ func (c *DevelopmentControl) validateOperation(ctx context.Context, tx *sql.Tx, 
 		}
 		return nil
 	case CreateClient:
-		if op.ClientID == "root-management" {
+		if op.ClientID == "root-management" || op.ClientID == "provider-management" {
 			return ErrInvalid
 		}
 		if op.RotationOf != 0 || op.RecipientSigningKey != "" || op.RecipientSigningFingerprint != "" || op.RootID != "" || op.KeyVersion != 0 || op.RecipientPublicKey != "" || op.RecipientFingerprint != "" || op.NotAfter != "" || op.RetireAt != "" || op.ExpectedRevision != 0 || !access.ValidID(op.ProfileID) || op.ProfileVersion == 0 || op.ProfileVersion > 9007199254740991 || len(op.Name) == 0 || len(op.Name) > 128 || !utf8.ValidString(op.Name) || strings.TrimSpace(op.Name) != op.Name {
@@ -174,8 +186,19 @@ func (c *DevelopmentControl) Submit(ctx context.Context, token string, op Contro
 	if e != nil {
 		return ControlRequest{}, e
 	}
-	if op.Kind == ProvisionRoot && applicant.GrantScope != "" {
+	if (op.Kind == ProvisionRoot || op.Kind == EnableProvider) && applicant.GrantScope != "" {
 		return ControlRequest{}, ErrDenied
+	}
+	var admin *controlMember
+	if op.Kind == EnableProvider {
+		m, e := c.eligible(ctx, tx, a.id, access.PolicyAdmin, "")
+		if e != nil {
+			return ControlRequest{}, e
+		}
+		if m.GrantScope != "" {
+			return ControlRequest{}, ErrDenied
+		}
+		admin = &m
 	}
 	var previous, previousDigest string
 	e = tx.QueryRowContext(ctx, `SELECT request_id,parameters_digest FROM keygate.control_idempotency WHERE environment=$1 AND principal_id=$2 AND idempotency_key=$3`, c.environment, a.id, idempotency).Scan(&previous, &previousDigest)
@@ -231,7 +254,7 @@ func (c *DevelopmentControl) Submit(ctx context.Context, token string, op Contro
 		if e != nil {
 			return ControlRequest{}, e
 		}
-		if op.Kind == ProvisionRoot && m.GrantScope != "" {
+		if (op.Kind == ProvisionRoot || op.Kind == EnableProvider) && m.GrantScope != "" {
 			continue
 		}
 		if !seen[m.PersonID] {
@@ -252,7 +275,14 @@ func (c *DevelopmentControl) Submit(ctx context.Context, token string, op Contro
 	if e != nil {
 		return ControlRequest{}, e
 	}
-	m := controlManifest{"keygate-control-jcs-v1", c.environment, id, applicant, op, policyVersion, threshold, members, now.Format("2006-01-02T15:04:05.000Z"), expires.Format("2006-01-02T15:04:05.000Z")}
+	m := controlManifest{Schema: "keygate-control-jcs-v1", Environment: c.environment, RequestID: id, Applicant: applicant, Operation: op, PolicyVersion: policyVersion, Threshold: threshold, Approvers: members, Created: now.Format("2006-01-02T15:04:05.000Z"), Expires: expires.Format("2006-01-02T15:04:05.000Z"), ProviderAdmin: admin}
+	if needsProviderSnapshot(op.Kind) {
+		snapshot, e := c.providerSnapshot(ctx, tx, "internal-software")
+		if e != nil {
+			return ControlRequest{}, e
+		}
+		m.ProviderPolicy = &snapshot
+	}
 	raw, e := manifest.Canonical(m)
 	if e != nil || len(raw) > 65536 {
 		return ControlRequest{}, ErrInvalid
@@ -317,6 +347,24 @@ func (c *DevelopmentControl) liveManifest(ctx context.Context, tx *sql.Tx, m con
 	}
 	if applicant != m.Applicant {
 		return ErrConflict
+	}
+	if needsProviderSnapshot(m.Operation.Kind) {
+		snapshot, e := c.providerSnapshot(ctx, tx, "internal-software")
+		if e != nil {
+			return e
+		}
+		if m.ProviderPolicy == nil || *m.ProviderPolicy != snapshot {
+			return ErrConflict
+		}
+	}
+	if m.Operation.Kind == EnableProvider {
+		admin, e := c.eligible(ctx, tx, m.Applicant.PrincipalID, access.PolicyAdmin, "")
+		if e != nil {
+			return e
+		}
+		if m.ProviderAdmin == nil || *m.ProviderAdmin != admin || admin.GrantScope != "" {
+			return ErrConflict
+		}
 	}
 	return nil
 }
@@ -544,6 +592,10 @@ func (c *DevelopmentControl) executePreparedAs(ctx context.Context, id, digest, 
 		n, _ := result.RowsAffected()
 		if n != 1 {
 			return ErrConflict
+		}
+	} else if op.Kind == EnableProvider {
+		if e = c.applyProviderOperation(ctx, tx, op); e != nil {
+			return e
 		}
 	} else if e = c.applyKeyOperation(ctx, tx, m, prepared); e != nil {
 		return e

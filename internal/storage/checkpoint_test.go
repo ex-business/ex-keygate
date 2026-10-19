@@ -108,3 +108,29 @@ func TestQuarantineRestoredInvalidatesSessionsAndPendingApprovals(t *testing.T) 
 		t.Fatal(e)
 	}
 }
+
+// 在线事务占用后序表时必须立即拒绝维护，且释放已取得的前序表锁。
+func TestQuarantineRejectsActiveTransactions(t *testing.T) {
+	f := newKeyFixture(t)
+	ctx := context.Background()
+	cp, e := f.f.c.store.CaptureSafetyCheckpoint(ctx, f.f.c.environment)
+	if e != nil {
+		t.Fatal(e)
+	}
+	tx, e := f.f.db.BeginTx(ctx, nil)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer tx.Rollback()
+	if _, e = tx.ExecContext(ctx, `SELECT token_hash FROM keygate.sessions FOR UPDATE`); e != nil {
+		t.Fatal(e)
+	}
+	bounded, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	if e = f.f.c.store.QuarantineRestored(bounded, cp, unique(t)); e == nil || bounded.Err() != nil {
+		t.Fatalf("占用中的恢复必须立即拒绝: %v", e)
+	}
+	if _, e = tx.ExecContext(bounded, `LOCK TABLE keygate.security_domains IN ROW EXCLUSIVE MODE NOWAIT`); e != nil {
+		t.Fatal("维护失败未释放前序锁", e)
+	}
+}

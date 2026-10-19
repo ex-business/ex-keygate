@@ -123,6 +123,9 @@ func (c *DevelopmentControl) BootstrapOffline(ctx context.Context, b Bootstrap, 
 	if _, err = tx.ExecContext(ctx, `INSERT INTO keygate.security_domains(environment,bootstrap_evidence_hash) VALUES($1,$2)`, c.environment, b.EvidenceHash); err != nil {
 		return err
 	}
+	if err = seedBuiltInProviders(ctx, tx, c.environment); err != nil {
+		return err
+	}
 	for _, p := range b.Principals {
 		if _, err = tx.ExecContext(ctx, `INSERT INTO keygate.principals(environment,principal_id,issuer,subject_hash,person_id) VALUES($1,$2,$3,$4,$5)`, c.environment, p.ID, p.Issuer, p.SubjectHash, p.PersonID); err != nil {
 			return err

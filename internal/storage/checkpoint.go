@@ -27,6 +27,7 @@ var checkpointTables = []checkpointTable{
 	{"auth_profiles", "environment=$1"}, {"clients", "environment=$1"}, {"control_policies", "environment=$1"}, {"control_policy_members", "environment=$1"},
 	{"control_requests", "environment=$1"}, {"control_votes", "environment=$1"}, {"control_executions", "environment=$1"}, {"control_idempotency", "environment=$1"},
 	{"client_roots", "environment=$1"}, {"key_versions", "environment=$1"}, {"rotation_tasks", "environment=$1"}, {"recovery_tasks", "environment=$1"}, {"revocations", "environment=$1"},
+	{"provider_candidates", "environment=$1"}, {"provider_policies", "environment=$1"}, {"provider_checks", "environment=$1"},
 	{"root_budgets", "root_id IN (SELECT root_id FROM keygate.client_roots WHERE environment=$1)"},
 	{"sessions", "principal_id IN(SELECT principal_id FROM keygate.principals WHERE environment=$1)"},
 	{"scoped_audit", "environment=$1"}, {"audit_events", "event_id IN(SELECT event_id FROM keygate.scoped_audit WHERE environment=$1)"},
@@ -132,9 +133,10 @@ func (s *Store) QuarantineRestored(ctx context.Context, expected SafetyCheckpoin
 	if _, e = tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(610847122)`); e != nil {
 		return e
 	}
-	// 固定表清单阻止核对与隔离之间的写竞争；在线运行会等待/失败，不能绕过隔离维护步骤。
+	// 固定表清单阻止核对与隔离之间的写竞争；维护前必须停服。
+	// 任一表仍被在线事务占用就立即拒绝并回滚全部锁，避免持有前序表锁等待后序表而形成锁环。
 	for _, table := range checkpointTables {
-		if _, e = tx.ExecContext(ctx, `LOCK TABLE keygate.`+table.name+` IN SHARE ROW EXCLUSIVE MODE`); e != nil {
+		if _, e = tx.ExecContext(ctx, `LOCK TABLE keygate.`+table.name+` IN EXCLUSIVE MODE NOWAIT`); e != nil {
 			return e
 		}
 	}
@@ -146,6 +148,9 @@ func (s *Store) QuarantineRestored(ctx context.Context, expected SafetyCheckpoin
 		return ErrConflict
 	}
 	environment := expected.Environment
+	if _, e = tx.ExecContext(ctx, `UPDATE keygate.provider_policies SET enabled=false,revision=revision+1 WHERE environment=$1`, environment); e != nil {
+		return e
+	}
 	if _, e = tx.ExecContext(ctx, `UPDATE keygate.clients SET state='disabled',revision=revision+1 WHERE environment=$1`, environment); e != nil {
 		return e
 	}
@@ -183,7 +188,7 @@ func (s *Store) QuarantineRestored(ctx context.Context, expected SafetyCheckpoin
 // CheckQuarantinedOffline 供显式恢复启动验证已隔离状态；必须先由启动方验签并核对外部最新 checkpoint。
 func (c *DevelopmentControl) CheckQuarantinedOffline(ctx context.Context) error {
 	var safe bool
-	e := c.store.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM keygate.security_domains WHERE environment=$1) AND EXISTS(SELECT 1 FROM keygate.scoped_audit s JOIN keygate.audit_events a ON a.event_id=s.event_id WHERE s.environment=$1 AND a.action='restore_quarantine') AND NOT EXISTS(SELECT 1 FROM keygate.clients WHERE environment=$1 AND state='enabled') AND NOT EXISTS(SELECT 1 FROM keygate.control_requests WHERE environment=$1 AND NOT executed AND decision IN ('pending','approved')) AND NOT EXISTS(SELECT 1 FROM keygate.sessions WHERE principal_id IN(SELECT principal_id FROM keygate.principals WHERE environment=$1) AND revoked_at IS NULL)`, c.environment).Scan(&safe)
+	e := c.store.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM keygate.security_domains WHERE environment=$1) AND EXISTS(SELECT 1 FROM keygate.scoped_audit s JOIN keygate.audit_events a ON a.event_id=s.event_id WHERE s.environment=$1 AND a.action='restore_quarantine') AND NOT EXISTS(SELECT 1 FROM keygate.provider_policies WHERE environment=$1 AND enabled) AND NOT EXISTS(SELECT 1 FROM keygate.clients WHERE environment=$1 AND state='enabled') AND NOT EXISTS(SELECT 1 FROM keygate.control_requests WHERE environment=$1 AND NOT executed AND decision IN ('pending','approved')) AND NOT EXISTS(SELECT 1 FROM keygate.sessions WHERE principal_id IN(SELECT principal_id FROM keygate.principals WHERE environment=$1) AND revoked_at IS NULL)`, c.environment).Scan(&safe)
 	if e != nil {
 		return e
 	}
