@@ -62,22 +62,22 @@ function renderIdentity() {
  const own=state.context?.identity;$('#login').textContent=state.session?'重新认证':'登录';$('#logout').hidden=!state.session;$('#user-name').hidden=!own;$('#user-name').textContent=own?person(own.principalId):'';
  $('#environment').textContent=state.context?(state.context.simulatedIdentity?'开发环境 · 模拟身份':'开发环境 · 外部 SSO'):'尚未登录';
  const banner=$('#session-banner');banner.replaceChildren();banner.hidden=false;banner.className='notice';
- if(!state.session){banner.append(node('span','','请先通过 SSO 登录，进入你的工作空间。'));const a=node('a','button small','SSO 登录');a.href='/login';banner.append(a);}
+ if(!state.session){banner.append(node('span','','请登录管理平台。'));const a=node('a','button small','登录');a.href='/login';banner.append(a);}
  else if(!own){banner.append(node('span','','身份已验证，但尚未取得本地授权信息。请联系授权管理员核对登记。'));}
  else if(own.mfaRequired&&!own.mfaVerified){banner.append(node('span','','本人二次验证尚未完成。管理数据和关键操作将在验证后开放。'),button('完成本人验证',()=>startMFA('management'),'small'));}
  else {banner.hidden=true;}
  $('#new-root').disabled=!hasRole('requester')||!own?.mfaVerified;$('#export-audit').disabled=!hasRole('auditor')||!own?.mfaVerified;const todo=(state.requests||[]).filter(isCurrent).length;$('#todo-count').hidden=todo===0;$('#todo-count').textContent=todo;
- const actions=$('#page-actions');actions.replaceChildren();if(['overview','clients'].includes(state.page)){const b=button('＋ 登记客户端',openCreate,'');b.disabled=!hasRole('requester')||!own?.mfaVerified||!state.config?.profiles?.length;actions.append(b);}if(state.page==='approvals')actions.append(button('刷新待办',refresh,'plain small'));
+ const actions=$('#page-actions');actions.replaceChildren();if(['overview','clients'].includes(state.page)){const b=button('登记客户端',openCreate,'');b.disabled=!hasRole('requester')||!own?.mfaVerified||!state.config?.profiles?.length;actions.append(b);}if(state.page==='approvals')actions.append(button('刷新待办',refresh,'plain small'));
 }
 function renderOverview() {
  $('#metric-clients').textContent=state.clients?.length??'—';$('#metric-enabled').textContent=state.clients?.filter(c=>c.state==='enabled').length??'—';$('#metric-todo').textContent=state.requests?.filter(isCurrent).length??'—';$('#metric-execute').textContent=state.requests?.filter(canExecute).length??'—';
- if(!state.requests){unavailable($('#overview-todos'),'requests');unavailable($('#overview-recent'),'requests');}else{const mine=state.requests.filter(isCurrent);if(mine.length)table($('#overview-todos'),['申请事项','状态','发起人 / 时间','进度','操作'],requestRows(mine.slice(0,4),true));else empty($('#overview-todos'),'暂无待你处理的申请','轮到你验证或确认时，待办会显示在这里。',null,true);if(state.requests.length)table($('#overview-recent'),['申请事项','状态','发起人 / 时间','进度','操作'],requestRows(state.requests.slice(0,4),true));else empty($('#overview-recent'),'暂无变更申请','登记客户端或申请密钥后，可以在这里跟踪进度。',null,true);}
+ if(!state.requests){unavailable($('#overview-todos'),'requests');unavailable($('#overview-recent'),'requests');}else{const mine=state.requests.filter(isCurrent);if(mine.length)table($('#overview-todos'),['申请事项','状态','发起人 / 时间','进度','操作'],requestRows(mine.slice(0,4),true));else empty($('#overview-todos'),'暂无待你处理的申请','',null,true);if(state.requests.length)table($('#overview-recent'),['申请事项','状态','发起人 / 时间','进度','操作'],requestRows(state.requests.slice(0,4),true));else empty($('#overview-recent'),'暂无变更申请','登记客户端或申请密钥后，可以在这里跟踪进度。',null,true);}
  renderPolicySummary($('#overview-policy'));
  const own=state.context?.identity,target=$('#overview-verification');target.replaceChildren();if(!own){unavailable(target,'identity');return;}
  const line=node('div','identity-state');line.append(node('div','identity-avatar',person(own.principalId).slice(-1)),textCell(person(own.principalId),own.grants.map(g=>labels.roles[g.role]||g.role).join(' · ')));target.append(line,badge(own.mfaVerified?'本人验证已完成':'等待本人验证',own.mfaVerified?'success':'warning'));
  for(const method of Object.keys(labels.methods)){const n=node('div','method-line');n.append(node('span','',labels.methods[method]),node('span','',(own.factors||[]).some(f=>f.method===method)?'已登记绑定':state.context.available[method]?'待受控绑定':'插件未接入'));target.append(n);}
 }
-function renderPolicySummary(target) {const p=state.settings;if(!p){unavailable(target,'settings','尚未读取策略');return;}target.replaceChildren();const hero=node('div','policy-hero');const count=node('div','quorum-number',p.m);count.append(node('span','','of'),document.createTextNode(String(p.approvers.length)));hero.append(count,node('p','',p.sequential?'不同自然人依次确认，达到门槛后批准。':'不同自然人独立审批，达到门槛后批准。'));target.append(hero,steps(p.approvers,0,p.sequential?p.approvers[0]:null));target.append(node('div','overview-policy-meta',`策略版本 v${p.version} · 不重复计人，不自动降低门槛`));}
+function renderPolicySummary(target) {const p=state.settings;if(!p){unavailable(target,'settings','尚未读取策略');return;}target.replaceChildren();const hero=node('div','policy-hero');const count=node('div','quorum-number',p.m);count.append(node('span','','of'),document.createTextNode(String(p.approvers.length)));hero.append(count,node('p','',p.sequential?'按顺序审批':'独立审批'));target.append(hero,steps(p.approvers,0,p.sequential?p.approvers[0]:null));target.append(node('div','overview-policy-meta',`策略版本 v${p.version}`));}
 function steps(ids,completed,current,members) {const d=node('div','steps');ids.forEach((id,i)=>{const done=i<completed;const n=node('div','person-step'+(done?' done':'')+(id===current?' current':''));n.append(node('div','step-avatar',done?'✓':i+1),node('strong','',person(id,members?.find(p=>p.principalId===id)?.personId)),node('small','',done?'已处理':id===current?'当前处理人':'等待流转'));d.append(n);});return d;}
 function renderClients() {
  const target=$('#client-table');if(!state.clients){unavailable(target,'clients');$('#client-pagination').replaceChildren();return;}
@@ -90,7 +90,7 @@ function renderApprovals() {
  const target=$('#approval-table');if(!state.requests){unavailable(target,'requests');$('#approval-footer').textContent='仅展示当前有权查看的申请。';return;}
  let records=state.requests;const filter=state.approvalFilter;for(const b of $('#approval-tabs').querySelectorAll('button'))b.classList.toggle('active',b.dataset.filter===filter);
  if(filter==='mine')records=records.filter(isCurrent);if(filter==='applicant')records=records.filter(r=>manifest(r).applicant.principalId===state.session?.principalId);if(filter==='execute')records=records.filter(canExecute);const status=$('#approval-status').value;if(status)records=records.filter(r=>requestState(r)===status);
- if(records.length)table(target,['申请事项','状态','发起人 / 时间','人员进度','操作'],requestRows(records));else empty(target,'暂无符合条件的申请','新的审批待办和申请进度会显示在这里。');$('#approval-footer').textContent=`共 ${records.length} 条 · 当前有权查看的最近100条申请，未经确认不会自动执行`;
+ if(records.length)table(target,['申请事项','状态','发起人 / 时间','人员进度','操作'],requestRows(records));else empty(target,'暂无符合条件的申请','');$('#approval-footer').textContent=`共 ${records.length} 条 · 最近100条申请`;
 }
 function renderVerification() {
  const target=$('#factor-cards'),own=state.context?.identity;target.replaceChildren();$('#verify-management').disabled=!own;

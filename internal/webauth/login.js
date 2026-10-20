@@ -8,7 +8,7 @@ async function api(path,method='GET',body,prelogin=false){
  return response.status===204?null:response.json();
 }
 async function busy(button,action){if(button.disabled)return;button.disabled=true;showError('');try{await action();}catch(e){showError(e.message||'连接失败，请稍后再试。');}finally{if(button.isConnected)button.disabled=false;}}
-function entry(){generation++;challenge=null;sessionCSRF='';$('#factors').replaceChildren();$('#verification').hidden=true;$('#password-form').hidden=false;$('#sso-section').hidden=false;$('#loading').hidden=true;$('#title').textContent='登录管理平台';$('#subtitle').textContent='使用你的管理账号继续。';$('#step-password').classList.add('active');$('#step-mfa').classList.remove('active');}
+function entry(){generation++;challenge=null;sessionCSRF='';$('#factors').replaceChildren();$('#verification').hidden=true;$('#password-form').hidden=false;$('#sso-section').hidden=false;$('#loading').hidden=true;$('#title').textContent='登录管理平台';$('#subtitle').textContent='请输入管理账号和密码。';$('#step-password').classList.add('active');$('#step-mfa').classList.remove('active');}
 async function options(){const c=await api('/auth/options');loginCSRF=c.csrfToken;$('#submit-password').disabled=!c.password;$('#username').disabled=!c.password;$('#password').disabled=!c.password;$('#sso-note').hidden=!c.simulatedSSO;if(!c.password)$('#subtitle').textContent='本地账号尚未配置，请使用 SSO 或联系管理员。';}
 // 口令只建立待验证会话；必须向服务端核对本人management证明，不能依赖前端状态进入业务。
 async function continueSession(){const session=await api('/auth/session');sessionCSRF=session.csrfToken;const own=await api('/api/console/identity');if(own.identity.mfaVerified){location.replace('/manage');return;}
