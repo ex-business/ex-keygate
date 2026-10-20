@@ -28,6 +28,8 @@ type DevelopmentControl struct {
 	store                *Store
 	environment, profile string
 	logger               *slog.Logger
+	rootPersistence      func(string, []byte) error
+	rootMaterial         func(string) ([]byte, error)
 }
 
 func NewDevelopmentControl(mode config.Environment, environment, profile string, s *Store) (*DevelopmentControl, error) {
@@ -37,7 +39,7 @@ func NewDevelopmentControl(mode config.Environment, environment, profile string,
 	if _, e := hex.DecodeString(profile); e != nil {
 		return nil, ErrInvalid
 	}
-	return &DevelopmentControl{s, environment, profile, slog.Default()}, nil
+	return &DevelopmentControl{store: s, environment: environment, profile: profile, logger: slog.Default()}, nil
 }
 
 type Bootstrap struct {

@@ -23,6 +23,7 @@ type TableCheckpoint struct {
 type checkpointTable struct{ name, where string }
 
 var checkpointTables = []checkpointTable{
+	{"persistent_deployments", "environment=$1"},
 	{"account_setups", "environment=$1"}, {"account_setup_factors", "environment=$1"},
 	{"principal_session_blocks", "environment=$1"},
 	{"runtime_cluster", "$1::text<>''"}, {"runtime_nodes", "$1::text<>''"},

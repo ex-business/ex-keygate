@@ -6,7 +6,8 @@ import (
 )
 
 // ProvisionSoftwareRootRequested 只有独立多人批准后才生成新的实际软件根材料。
-// 材料仅留在调用进程；事务成功但进程丢失材料时，该根不可恢复，必须审批另一个新根，不能复用别名。
+// 持久运行先将材料封装至可信启动器；事务失败允许留下孤立密文，但绝不让未登记材料获得认证资格。
+// 临时开发模式未配置封装器时，材料仍仅在内存，不能宣称可恢复。
 func (c *DevelopmentControl) ProvisionSoftwareRootRequested(ctx context.Context, token, id, digest, trace, loginRootID string) (*DevelopmentKeys, error) {
 	tx, e := c.begin(ctx)
 	if e != nil {
@@ -35,7 +36,12 @@ func (c *DevelopmentControl) ProvisionSoftwareRootRequested(ctx context.Context,
 	if e = tx.Commit(); e != nil {
 		return nil, e
 	}
-	material, e := keycrypto.Generate()
+	var material []byte
+	if c.rootMaterial != nil {
+		material, e = c.rootMaterial(m.Operation.RootID)
+	} else {
+		material, e = keycrypto.Generate()
+	}
 	if e != nil {
 		return nil, e
 	}
@@ -44,9 +50,22 @@ func (c *DevelopmentControl) ProvisionSoftwareRootRequested(ctx context.Context,
 	if e != nil {
 		return nil, e
 	}
+	if c.rootPersistence != nil {
+		if e = c.rootPersistence(k.rootID, material); e != nil {
+			return nil, e
+		}
+	}
 	p := &preparedKey{issueID: id, digest: digest, newRoot: k}
 	if e = c.executePreparedAs(ctx, id, digest, trace, p, token); e != nil {
 		return nil, e
 	}
 	return k, nil
+}
+
+// SetRootPersistence 仅供监听前可信启动器设置，不能由管理HTTP指定路径或导出根材料。
+func (c *DevelopmentControl) SetRootPersistence(persist func(string, []byte) error, readers ...func(string) ([]byte, error)) {
+	c.rootPersistence = persist
+	if len(readers) == 1 {
+		c.rootMaterial = readers[0]
+	}
 }
