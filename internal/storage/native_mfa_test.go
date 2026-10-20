@@ -37,7 +37,7 @@ func completeNative(t *testing.T, f controlFixture, who int, purpose string, cou
 	}
 	state, e := f.c.StartMFA(ctx, f.tokens[who], purpose, unique(t))
 	if e != nil {
-		t.Fatal("start", e)
+		t.Fatalf("start MFA who=%d purpose=%s: %v", who, purpose, e)
 	}
 	nonce := make([]byte, 32)
 	nonce[0] = byte(counter + 1)

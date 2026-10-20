@@ -136,7 +136,8 @@ func TestOnlineGovernanceApprovalPermissionsAndSessions(t *testing.T) {
 	rand.Read(rawToken)
 	newToken := base64.RawURLEncoding.EncodeToString(rawToken)
 	hash := sha256.Sum256([]byte(newToken))
-	if _, e = f.c.store.CreateSession(ctx, hash, f.profile, f.bootstrap.Principals[4].ID, time.Now(), Audit{unique(t), unique(t), f.bootstrap.Principals[4].ID, "session_create", hex.EncodeToString(hash[:]), "success"}); e != nil {
+	// 本用例验证撤权与重新认证，避免宿主和容器微小时差误触未来auth_time拒绝分支。
+	if _, e = f.c.store.CreateSession(ctx, hash, f.profile, f.bootstrap.Principals[4].ID, time.Now().Add(-time.Second), Audit{unique(t), unique(t), f.bootstrap.Principals[4].ID, "session_create", hex.EncodeToString(hash[:]), "success"}); e != nil {
 		t.Fatal(e)
 	}
 	f.tokens[4] = newToken
