@@ -55,10 +55,20 @@ func (l *requestLimiter) allow() bool {
 // EnableSimulatedFlow 必须由开发启动命令显式调用；三个模拟账号不代表真实的三名人员或 MFA。
 // 每次启动创建隔离的临时安全域和软件根，绝不根据“缺少管理员”重开已有域初始化。
 func (s *Service) EnableSimulatedFlow(ctx context.Context) error {
+	return s.enableSimulatedFlow(ctx, "demo-"+hexToken(), "", nil, nil)
+}
+
+// InitializePersistentSimulatedFlow 仅显式首次初始化；原域哨兵不可覆盖，材料必须先加密持久化。
+func (s *Service) InitializePersistentSimulatedFlow(ctx context.Context, environment, rootID string, material []byte, persist func(string, []byte) error) error {
+	if persist == nil || len(material) != 32 {
+		return ErrConfig
+	}
+	return s.enableSimulatedFlow(ctx, environment, rootID, material, persist)
+}
+func (s *Service) enableSimulatedFlow(ctx context.Context, environment, root string, material []byte, persist func(string, []byte) error) error {
 	if s.handlerStarted.Load() || s.flow != nil || !s.config.Identity.DevelopmentMode || s.config.Identity.ClientID != mocksso.ClientID || len(s.config.Identity.AllowedACR) != 1 || s.config.Identity.AllowedACR[0] != mocksso.SimulatedACR {
 		return ErrConfig
 	}
-	environment := "demo-" + hexToken()
 	control, e := storage.NewDevelopmentControl(s.config.Environment, environment, s.profile, s.store)
 	if e != nil {
 		return e
@@ -96,12 +106,22 @@ func (s *Service) EnableSimulatedFlow(ctx context.Context) error {
 	if e = control.BootstrapOffline(ctx, b, "demo-bootstrap-"+hexToken()); e != nil {
 		return errors.New("development control bootstrap failed")
 	}
-	material, e := keycrypto.Generate()
-	if e != nil {
-		return e
+	if material == nil {
+		material, e = keycrypto.Generate()
+		if e != nil {
+			return e
+		}
+		defer clear(material)
 	}
-	defer clear(material)
-	root := "demo-client-root-" + hexToken()
+	if root == "" {
+		root = "demo-client-root-" + hexToken()
+	}
+	if persist != nil {
+		if e = persist(root, material); e != nil {
+			return e
+		}
+		control.SetRootPersistence(persist)
+	}
 	if e = s.store.RegisterRootBudget(ctx, root, 100000, audit("demo-budget-"+hexToken(), "offline-bootstrap", "root_budget_register", root, "success")); e != nil {
 		return e
 	}
