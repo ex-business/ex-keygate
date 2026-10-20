@@ -159,6 +159,7 @@ func (s *Service) flowRoutes(mux *http.ServeMux) {
 			next(w, r)
 		})
 	}
+	s.trustHistoryRoutes(mux)
 	s.trustRoutes(handle)
 	s.consoleRoutes(handle)
 	s.nativeMFARoutes(handle)

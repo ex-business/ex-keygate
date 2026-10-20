@@ -1,14 +1,18 @@
 package webauth
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"ex-keygate/internal/mfa"
 	"ex-keygate/internal/storage"
 	"ex-keygate/trustchain"
 	"fmt"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -97,6 +101,49 @@ func TestApplicationTrustHTTPFlow(t *testing.T) {
 		}
 	}
 	a.executeHTTP(t, actors[0], r)
+	status, _ = nativeHTTP(t, a, actors[0].cookie, "GET", "/api/config?limit=20", nil)
+	if status != 400 {
+		t.Fatal("旧业务查询限制被放宽", status)
+	}
+	status, _ = nativeHTTP(t, a, actors[0].cookie, "GET", "/api/trust/services/app-server/certificates?limit=1&limit=2", nil)
+	if status != 400 {
+		t.Fatal("重复分页参数", status)
+	}
+	status, _ = nativeHTTP(t, a, actors[0].cookie, "GET", "/api/trust/services/app-server/certificates?limit=%zz", nil)
+	if status != 400 {
+		t.Fatal("非法查询编码", status)
+	}
+	status, rawDownload := nativeHTTP(t, a, actors[0].cookie, "GET", "/api/trust/services/app-server/certificates/1/download?format=pem", nil)
+	block, _ := pem.Decode(rawDownload)
+	if status != 200 || block == nil || block.Type != "CERTIFICATE" || !bytes.Equal(block.Bytes, cert) {
+		t.Fatal("公开PEM下载错误", status)
+	}
+	status, rawDownload = nativeHTTP(t, a, actors[0].cookie, "GET", "/api/trust/services/app-server/certificates/1/download?format=der", nil)
+	if _, e := x509.ParseCertificate(rawDownload); status != 200 || e != nil || !bytes.Equal(rawDownload, cert) {
+		t.Fatal("公开DER下载错误", status, e)
+	}
+	status, rawDetail := nativeHTTP(t, a, actors[0].cookie, "GET", "/api/trust/services/app-server/certificates/1", nil)
+	var detail storage.TrustCertificateDetail
+	if status != 200 || json.Unmarshal(rawDetail, &detail) != nil || !detail.ChainValid || !detail.AuthenticationEligible || len(detail.Changes) != 1 || len(detail.Approvals) != 1 {
+		t.Fatal("详情或关联记录错误", status)
+	}
+	status, _ = nativeHTTP(t, a, actors[0].cookie, "GET", "/api/trust/services/app-server/certificates/01", nil)
+	if status != 400 {
+		t.Fatal("非规范版本未拒绝", status)
+	}
+	status, _ = nativeHTTP(t, a, actors[0].cookie, "GET", "/api/trust/services/app-server/certificates/1/download?format=private", nil)
+	if status != 400 {
+		t.Fatal("非法下载格式", status)
+	}
+	status, _ = nativeHTTP(t, a, actors[1].cookie, "GET", "/api/trust/services/app-server/certificates/1/download", nil)
+	if status != 403 {
+		t.Fatal("无权下载", status)
+	}
+	status, rawRoot := nativeHTTP(t, a, actors[0].cookie, "GET", "/api/trust/roots/"+trustchain.Fingerprint(root)+"/download?format=der", nil)
+	if status != 200 || !bytes.Equal(rawRoot, root) {
+		t.Fatal("根下载错误", status)
+	}
+
 	nonce, _ := trustchain.NewNonce()
 	requestBody := map[string]string{"nonce": nonce, "audience": "my-app"}
 	status, raw := nativeHTTP(t, a, actors[0].cookie, "POST", "/api/trust/app-server/status", requestBody)
@@ -136,4 +183,11 @@ func TestApplicationTrustHTTPFlow(t *testing.T) {
 	if verifier.Verify(message, proof, nonce, []byte("payload"), time.Now()) == nil {
 		t.Fatal("撤销后客户端仍接受签名")
 	}
+}
+
+func TestTrustRoutesRegisterTogether(t *testing.T) {
+	s := &Service{}
+	mux := http.NewServeMux()
+	s.trustHistoryRoutes(mux)
+	s.trustRoutes(func(pattern string, next http.HandlerFunc) { mux.HandleFunc(pattern, next) })
 }
