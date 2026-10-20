@@ -57,12 +57,15 @@ var trustChainSchema string
 //go:embed multiple_trust_roots_schema.sql
 var multipleTrustRootsSchema string
 
+//go:embed trust_history_schema.sql
+var trustHistorySchema string
+
 // migrateControl 使用编号和校验和拒绝已应用迁移被静默修改；不自动降级。
 func migrateControl(ctx context.Context, tx *sql.Tx) error {
 	for _, m := range []struct {
 		version int
 		body    string
-	}{{1, controlSchema}, {2, workflowSchema}, {3, keysSchema}, {4, lifecycleSchema}, {5, revocationSchema}, {6, recoverySchema}, {7, auditSchema}, {8, auditRefinementsSchema}, {9, providersSchema}, {10, clusterSchema}, {11, browserSchema}, {12, loginFreshnessSchema}, {13, nativeMFASchema}, {14, localAccountsSchema}, {15, trustChainSchema}, {16, multipleTrustRootsSchema}} {
+	}{{1, controlSchema}, {2, workflowSchema}, {3, keysSchema}, {4, lifecycleSchema}, {5, revocationSchema}, {6, recoverySchema}, {7, auditSchema}, {8, auditRefinementsSchema}, {9, providersSchema}, {10, clusterSchema}, {11, browserSchema}, {12, loginFreshnessSchema}, {13, nativeMFASchema}, {14, localAccountsSchema}, {15, trustChainSchema}, {16, multipleTrustRootsSchema}, {17, trustHistorySchema}} {
 		hash := sha256.Sum256([]byte(m.body))
 		checksum := hex.EncodeToString(hash[:])
 		var existing string

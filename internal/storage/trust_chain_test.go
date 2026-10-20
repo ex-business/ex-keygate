@@ -50,6 +50,36 @@ func TestApplicationTrustApprovalRotationRevocation(t *testing.T) {
 		}
 	}
 	approve(request)
+	detail, download, e := f.c.TrustCertificateDetail(ctx, f.tokens[0], "api-service", 1, true, unique(t))
+	if e != nil || !detail.ChainValid || !detail.AuthenticationEligible || trustchain.Fingerprint(download) != trustchain.Fingerprint(cert) {
+		t.Fatal("公开证书详情或下载错误", e)
+	}
+	detail, _, e = f.c.TrustCertificateDetail(ctx, f.tokens[0], "api-service", 1, false, unique(t))
+	if e != nil || len(detail.Changes) != 1 || len(detail.Approvals) != 1 || !detail.Approvals[0].Executed {
+		t.Fatal("发布变更与申请缺失", e)
+	}
+	if _, _, e = f.c.TrustCertificateDetail(ctx, f.tokens[1], "api-service", 1, true, unique(t)); !errors.Is(e, ErrDenied) {
+		t.Fatal("无查看权限下载", e)
+	}
+	// 事实表不可写时撤销必须整体回滚，不能出现状态已变而变更记录丢失。
+	blocked, e := f.db.BeginTx(ctx, nil)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if _, e = blocked.ExecContext(ctx, `LOCK TABLE keygate.application_trust_changes IN ACCESS EXCLUSIVE MODE`); e != nil {
+		t.Fatal(e)
+	}
+	short, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
+	e = f.c.RevokeTrustService(short, f.tokens[0], "api-service", 1, "confirmed_leak", unique(t))
+	cancel()
+	blocked.Rollback()
+	if e == nil {
+		t.Fatal("变更记录故障仍撤销成功")
+	}
+	detail, _, e = f.c.TrustCertificateDetail(ctx, f.tokens[0], "api-service", 1, false, unique(t))
+	if e != nil || !detail.AuthenticationEligible || len(detail.Changes) != 1 {
+		t.Fatal("事实写入故障未回滚", e)
+	}
 	_, current, e := f.c.TrustStatusSnapshot(ctx, "api-service", unique(t))
 	if e != nil || current.Version != 1 || current.Disabled || current.Revision != 1 {
 		t.Fatal("发布状态错误", e, current)
@@ -63,6 +93,14 @@ func TestApplicationTrustApprovalRotationRevocation(t *testing.T) {
 	if e = other.RevokeTrustService(ctx, f.tokens[0], "api-service", 1, "confirmed_leak", unique(t)); e != nil {
 		t.Fatal(e)
 	}
+	if e = other.RevokeTrustService(ctx, f.tokens[0], "api-service", 1, "suspected_leak", unique(t)); e != nil {
+		t.Fatal(e)
+	}
+	detail, _, e = f.c.TrustCertificateDetail(ctx, f.tokens[0], "api-service", 1, false, unique(t))
+	if e != nil || detail.AuthenticationEligible || len(detail.Changes) != 2 || detail.Changes[0].Reason != "confirmed_leak" {
+		t.Fatal("撤销事实不正确或重复", e)
+	}
+
 	_, current, e = f.c.TrustStatusSnapshot(ctx, "api-service", unique(t))
 	if e != nil || !current.Disabled || current.Revision != 2 {
 		t.Fatal("撤销未跨节点可见", e)
@@ -103,6 +141,37 @@ func TestApplicationTrustApprovalRotationRevocation(t *testing.T) {
 	if e != nil || !current.Disabled {
 		t.Fatal("正常停用失败", e)
 	}
+	history, e := f.c.TrustCertificateHistory(ctx, f.tokens[0], "api-service", 0, 1)
+	if e != nil || len(history.Certificates) != 1 || history.Certificates[0].Version != 2 || !history.HasMore {
+		t.Fatal("历史分页首屏", e)
+	}
+	history, e = f.c.TrustCertificateHistory(ctx, f.tokens[0], "api-service", history.NextBefore, 1)
+	if e != nil || len(history.Certificates) != 1 || history.Certificates[0].Version != 1 || history.Certificates[0].State != "revoked" || history.HasMore {
+		t.Fatal("历史分页次屏", e)
+	}
+	if _, e = f.db.Exec(`UPDATE keygate.role_grants SET client_id='api-service' WHERE environment=$1 AND principal_id=$2 AND role='viewer' AND client_id=''`, f.c.environment, f.bootstrap.Principals[0].ID); e != nil {
+		t.Fatal(e)
+	}
+	if _, _, e = f.c.TrustRootDetail(ctx, f.tokens[0], trustchain.Fingerprint(root), true, unique(t)); e != nil {
+		t.Fatal("范围查看者无法下载所属根", e)
+	}
+	otherRoot, _, _ := trustchain.NewRoot("unrelated-root", now)
+	if e = f.c.RegisterApplicationRootOffline(ctx, "another-app", otherRoot, unique(t)); e != nil {
+		t.Fatal(e)
+	}
+	if _, _, e = f.c.TrustRootDetail(ctx, f.tokens[0], trustchain.Fingerprint(otherRoot), false, unique(t)); !errors.Is(e, ErrDenied) {
+		t.Fatal("范围查看者读取其他根", e)
+	}
+	if _, e = f.c.TrustCertificateHistory(ctx, f.tokens[0], "unrelated-service", 0, 20); !errors.Is(e, ErrDenied) {
+		t.Fatal("范围查看者越权读取历史", e)
+	}
+	if _, e = f.db.Exec(`UPDATE keygate.role_grants SET enabled=false WHERE environment=$1 AND principal_id=$2 AND role='viewer'`, f.c.environment, f.bootstrap.Principals[0].ID); e != nil {
+		t.Fatal(e)
+	}
+	if _, _, e = f.c.TrustCertificateDetail(ctx, f.tokens[0], "api-service", 1, true, unique(t)); !errors.Is(e, ErrDenied) {
+		t.Fatal("撤权后仍可下载", e)
+	}
+
 }
 func TestTrustStatusUsesAuthorityTimeAndCommit(t *testing.T) {
 	f := nativeFixture(t)
@@ -239,5 +308,36 @@ func TestMultipleApplicationRootsIsolation(t *testing.T) {
 	}
 	if _, e = f.db.Exec(`INSERT INTO keygate.application_trust_services(environment,service_id,revision,active_version) VALUES($1,'ambiguous-service',1,0)`, f.c.environment); e == nil {
 		t.Fatal("多根域隐式绑定根")
+	}
+}
+
+func TestExpiredHistoricalCertificateRemainsReadable(t *testing.T) {
+	f := nativeFixture(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	past := now.Add(-2 * time.Hour)
+	root, key, _ := trustchain.NewRoot("historical-root", past)
+	if e := f.c.RegisterApplicationRootOffline(ctx, "app-test", root, unique(t)); e != nil {
+		t.Fatal(e)
+	}
+	pub, _, _ := ed25519.GenerateKey(rand.Reader)
+	cert, e := trustchain.Issue(root, key, pub, "app-test", trustchain.ServicePurpose, "expired-api", 1, past, past.Add(time.Hour))
+	if e != nil {
+		t.Fatal(e)
+	}
+	if _, e = f.db.Exec(`INSERT INTO keygate.application_trust_services(environment,service_id,revision,active_version,root_fingerprint) VALUES($1,'expired-api',1,1,$2)`, f.c.environment, trustchain.Fingerprint(root)); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = f.db.Exec(`INSERT INTO keygate.application_trust_certificates(environment,service_id,version,fingerprint,certificate,state) VALUES($1,'expired-api',1,$2,$3,'active')`, f.c.environment, trustchain.Fingerprint(cert), cert); e != nil {
+		t.Fatal(e)
+	}
+	completeNative(t, f, 0, "management", 1)
+	detail, der, e := f.c.TrustCertificateDetail(ctx, f.tokens[0], "expired-api", 1, true, unique(t))
+	if e != nil || !detail.ChainValid || detail.AuthenticationEligible || detail.Certificate.Info.Validity != "expired" || trustchain.Fingerprint(der) != trustchain.Fingerprint(cert) {
+		t.Fatal("过期历史被当作无效链或可认证", e)
+	}
+	detail, _, e = f.c.TrustCertificateDetail(ctx, f.tokens[0], "expired-api", 1, false, unique(t))
+	if e != nil || len(detail.Changes) != 0 || len(detail.Approvals) != 0 {
+		t.Fatal("旧证书补造事件", e)
 	}
 }

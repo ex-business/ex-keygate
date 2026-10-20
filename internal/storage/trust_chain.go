@@ -128,12 +128,18 @@ func (c *DevelopmentControl) validateTrustOperation(ctx context.Context, tx *sql
 	}
 	return nil
 }
-func (c *DevelopmentControl) applyTrustOperation(ctx context.Context, tx *sql.Tx, op ControlOperation) error {
+func (c *DevelopmentControl) applyTrustOperation(ctx context.Context, tx *sql.Tx, op ControlOperation, approvalID, actorID string) error {
 	if op.Kind == DisableTrustService {
 		if _, e := tx.ExecContext(ctx, `UPDATE keygate.application_trust_services SET disabled=true,revision=revision+1 WHERE environment=$1 AND service_id=$2`, c.environment, op.ClientID); e != nil {
 			return e
 		}
-		_, e := tx.ExecContext(ctx, `UPDATE keygate.application_trust_certificates SET state='disabled' WHERE environment=$1 AND service_id=$2 AND state='active'`, c.environment, op.ClientID)
+		if _, e := tx.ExecContext(ctx, `UPDATE keygate.application_trust_certificates SET state='disabled' WHERE environment=$1 AND service_id=$2 AND state='active'`, c.environment, op.ClientID); e != nil {
+			return e
+		}
+		return c.trustChange(ctx, tx, op.ClientID, op.KeyVersion, "disabled", "approved_disable", approvalID, actorID)
+	}
+	// 先记录被替代的活动版本；事务失败时事实与状态一起回滚。
+	if _, e := tx.ExecContext(ctx, `INSERT INTO keygate.application_trust_changes(environment,root_fingerprint,service_id,version,revision,action,reason,approval_id,actor_id) SELECT s.environment,s.root_fingerprint,s.service_id,c.version,s.revision+1,'retired','replaced_by_new_version',$3,$4 FROM keygate.application_trust_services s JOIN keygate.application_trust_certificates c ON c.environment=s.environment AND c.service_id=s.service_id AND c.state='active' WHERE s.environment=$1 AND s.service_id=$2`, c.environment, op.ClientID, approvalID, actorID); e != nil {
 		return e
 	}
 	// 新证书发布即切换当前版本，旧版本不再获发有效状态证明，泄露恢复不保留重叠窗口。
@@ -143,8 +149,10 @@ func (c *DevelopmentControl) applyTrustOperation(ctx context.Context, tx *sql.Tx
 	if _, e := tx.ExecContext(ctx, `UPDATE keygate.application_trust_certificates SET state='retired' WHERE environment=$1 AND service_id=$2 AND state='active'`, c.environment, op.ClientID); e != nil {
 		return e
 	}
-	_, e := tx.ExecContext(ctx, `INSERT INTO keygate.application_trust_certificates(environment,service_id,version,fingerprint,certificate,state) VALUES($1,$2,$3,$4,$5,'active')`, c.environment, op.ClientID, op.KeyVersion, trustchain.Fingerprint(op.TrustCertificate), op.TrustCertificate)
-	return e
+	if _, e := tx.ExecContext(ctx, `INSERT INTO keygate.application_trust_certificates(environment,service_id,version,fingerprint,certificate,state) VALUES($1,$2,$3,$4,$5,'active')`, c.environment, op.ClientID, op.KeyVersion, trustchain.Fingerprint(op.TrustCertificate), op.TrustCertificate); e != nil {
+		return e
+	}
+	return c.trustChange(ctx, tx, op.ClientID, op.KeyVersion, "published", "approved_publish", approvalID, actorID)
 }
 func (c *DevelopmentControl) trustService(ctx context.Context, tx *sql.Tx, id string) (TrustService, error) {
 	out := TrustService{ServiceID: id}
@@ -284,10 +292,21 @@ func (c *DevelopmentControl) RevokeTrustService(ctx context.Context, token, id s
 	if service.Version != version {
 		return ErrConflict
 	}
+	// 重试撤销不增加重复事实，也不改变最初的原因。
+	var alreadyRevoked bool
+	if e = tx.QueryRowContext(ctx, `SELECT state='revoked' FROM keygate.application_trust_certificates WHERE environment=$1 AND service_id=$2 AND version=$3`, c.environment, id, version).Scan(&alreadyRevoked); e != nil {
+		return e
+	}
+	if alreadyRevoked {
+		return tx.Commit()
+	}
 	if _, e = tx.ExecContext(ctx, `UPDATE keygate.application_trust_services SET disabled=true,revision=revision+1 WHERE environment=$1 AND service_id=$2 AND NOT disabled`, c.environment, id); e != nil {
 		return e
 	}
 	if _, e = tx.ExecContext(ctx, `UPDATE keygate.application_trust_certificates SET state='revoked' WHERE environment=$1 AND service_id=$2 AND version=$3`, c.environment, id, version); e != nil {
+		return e
+	}
+	if e = c.trustChange(ctx, tx, id, version, "revoked", reason, "", a.id); e != nil {
 		return e
 	}
 	if e = c.audit(ctx, tx, trace, a.id, "application_trust_revoke", id, "revoked"); e != nil {

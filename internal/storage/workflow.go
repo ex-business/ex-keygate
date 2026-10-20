@@ -639,7 +639,7 @@ func (c *DevelopmentControl) executePreparedAs(ctx context.Context, id, digest, 
 			return ErrConflict
 		}
 	} else if op.Kind == PublishTrustCertificate || op.Kind == DisableTrustService {
-		if e = c.applyTrustOperation(ctx, tx, op); e != nil {
+		if e = c.applyTrustOperation(ctx, tx, op, id, m.Applicant.PrincipalID); e != nil {
 			return e
 		}
 	} else if op.Kind == EnableProvider {
