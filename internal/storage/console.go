@@ -77,6 +77,9 @@ func (c *DevelopmentControl) ConsoleIdentity(ctx context.Context, token string) 
 }
 
 type ConsolePerson struct {
+	Account       *AccountInfo   `json:"account,omitempty"`
+	Policy        *mfa.Policy    `json:"policy,omitempty"`
+	Factors       []mfa.Factor   `json:"factors"`
 	Revision      string         `json:"revision"`
 	Issuer        string         `json:"issuer"`
 	MFAConfigured bool           `json:"mfaConfigured"`
@@ -152,6 +155,17 @@ func (c *DevelopmentControl) ConsoleSettings(ctx context.Context, token string) 
 			return out, e
 		}
 		out.People[i].Grants = grants
+		out.People[i].Account, e = c.accountInfo(ctx, tx, out.People[i].PrincipalID)
+		if e != nil {
+			return out, e
+		}
+		policy, _, factors, err := c.mfaPolicy(ctx, tx, out.People[i].PrincipalID)
+		if err == nil {
+			out.People[i].Policy = &policy
+			out.People[i].Factors = factors
+		} else if !errors.Is(err, ErrDenied) {
+			return out, err
+		}
 	}
 	if e = tx.Commit(); e != nil {
 		return ConsoleSettings{}, e

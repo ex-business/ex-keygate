@@ -27,31 +27,32 @@ const (
 )
 
 type ControlOperation struct {
-	Governance                  *GovernanceChange `json:"governance,omitempty"`
-	TrustCertificate            []byte            `json:"trustCertificate,omitempty"`
-	TrustProof                  []byte            `json:"trustProof,omitempty"`
-	TrustRootFingerprint        string            `json:"trustRootFingerprint,omitempty"`
-	ProviderID                  string            `json:"providerId,omitempty"`
-	ProviderDigest              string            `json:"providerDigest,omitempty"`
-	RotationReason              string            `json:"rotationReason,omitempty"`
-	RecoveryID                  string            `json:"recoveryId,omitempty"`
-	IncidentID                  string            `json:"incidentId,omitempty"`
-	EvidenceHash                string            `json:"evidenceHash,omitempty"`
-	RotationOf                  uint64            `json:"rotationOf,string,omitempty"`
-	RecipientSigningKey         string            `json:"recipientSigningKey,omitempty"`
-	RecipientSigningFingerprint string            `json:"recipientSigningFingerprint,omitempty"`
-	Kind                        string            `json:"kind"`
-	ClientID                    string            `json:"clientId"`
-	ExpectedRevision            uint64            `json:"expectedRevision,string"`
-	Name                        string            `json:"name"`
-	ProfileID                   string            `json:"profileId"`
-	ProfileVersion              uint64            `json:"profileVersion,string"`
-	KeyVersion                  uint64            `json:"keyVersion,string,omitempty"`
-	RootID                      string            `json:"rootId,omitempty"`
-	RecipientPublicKey          string            `json:"recipientPublicKey,omitempty"`
-	RecipientFingerprint        string            `json:"recipientFingerprint,omitempty"`
-	NotAfter                    string            `json:"notAfter,omitempty"`
-	RetireAt                    string            `json:"retireAt,omitempty"`
+	Maintenance                 *AccountMaintenance `json:"maintenance,omitempty"`
+	Governance                  *GovernanceChange   `json:"governance,omitempty"`
+	TrustCertificate            []byte              `json:"trustCertificate,omitempty"`
+	TrustProof                  []byte              `json:"trustProof,omitempty"`
+	TrustRootFingerprint        string              `json:"trustRootFingerprint,omitempty"`
+	ProviderID                  string              `json:"providerId,omitempty"`
+	ProviderDigest              string              `json:"providerDigest,omitempty"`
+	RotationReason              string              `json:"rotationReason,omitempty"`
+	RecoveryID                  string              `json:"recoveryId,omitempty"`
+	IncidentID                  string              `json:"incidentId,omitempty"`
+	EvidenceHash                string              `json:"evidenceHash,omitempty"`
+	RotationOf                  uint64              `json:"rotationOf,string,omitempty"`
+	RecipientSigningKey         string              `json:"recipientSigningKey,omitempty"`
+	RecipientSigningFingerprint string              `json:"recipientSigningFingerprint,omitempty"`
+	Kind                        string              `json:"kind"`
+	ClientID                    string              `json:"clientId"`
+	ExpectedRevision            uint64              `json:"expectedRevision,string"`
+	Name                        string              `json:"name"`
+	ProfileID                   string              `json:"profileId"`
+	ProfileVersion              uint64              `json:"profileVersion,string"`
+	KeyVersion                  uint64              `json:"keyVersion,string,omitempty"`
+	RootID                      string              `json:"rootId,omitempty"`
+	RecipientPublicKey          string              `json:"recipientPublicKey,omitempty"`
+	RecipientFingerprint        string              `json:"recipientFingerprint,omitempty"`
+	NotAfter                    string              `json:"notAfter,omitempty"`
+	RetireAt                    string              `json:"retireAt,omitempty"`
 }
 
 type controlMember struct {
@@ -116,6 +117,12 @@ func (c *DevelopmentControl) eligible(ctx context.Context, tx *sql.Tx, id string
 }
 func (c *DevelopmentControl) validateOperation(ctx context.Context, tx *sql.Tx, op ControlOperation) error {
 	if !access.ValidID(op.ClientID) || op.ExpectedRevision > 9007199254740991 {
+		return ErrInvalid
+	}
+	if op.Kind == MaintainAccount {
+		return c.validateAccountMaintenance(ctx, tx, op)
+	}
+	if op.Maintenance != nil {
 		return ErrInvalid
 	}
 	if isGovernance(op.Kind) {
@@ -293,9 +300,9 @@ func (c *DevelopmentControl) Submit(ctx context.Context, token string, op Contro
 			continue
 		}
 		// 人员变更受益人及其别名不参加本次表决，门槛仍使用当前策略，不自动降低。
-		if op.Kind == UpdatePrincipal && op.Governance != nil {
+		if isGovernance(op.Kind) && governanceTarget(op) != "" {
 			var targetPerson string
-			if e = tx.QueryRowContext(ctx, `SELECT person_id FROM keygate.principals WHERE environment=$1 AND principal_id=$2`, c.environment, op.Governance.Target).Scan(&targetPerson); e != nil {
+			if e = tx.QueryRowContext(ctx, `SELECT person_id FROM keygate.principals WHERE environment=$1 AND principal_id=$2`, c.environment, governanceTarget(op)).Scan(&targetPerson); e != nil {
 				return ControlRequest{}, e
 			}
 			if targetPerson == m.PersonID {

@@ -30,7 +30,7 @@ type GovernanceChange struct {
 }
 
 func isGovernance(kind string) bool {
-	return kind == CreatePrincipal || kind == UpdatePrincipal || kind == UpdateApprovalPolicy
+	return kind == MaintainAccount || kind == CreatePrincipal || kind == UpdatePrincipal || kind == UpdateApprovalPolicy
 }
 func operationScope(op ControlOperation) string {
 	if isGovernance(op.Kind) {
@@ -229,7 +229,7 @@ func (c *DevelopmentControl) governanceViable(ctx context.Context, tx *sql.Tx, a
 	return nil
 }
 func (c *DevelopmentControl) governanceApplicant(ctx context.Context, tx *sql.Tx, op ControlOperation, actor string) error {
-	if !isGovernance(op.Kind) || op.Governance == nil {
+	if !isGovernance(op.Kind) {
 		return nil
 	}
 	g := op.Governance
@@ -237,21 +237,28 @@ func (c *DevelopmentControl) governanceApplicant(ctx context.Context, tx *sql.Tx
 	if e := tx.QueryRowContext(ctx, `SELECT person_id FROM keygate.principals WHERE environment=$1 AND principal_id=$2`, c.environment, actor).Scan(&person); e != nil {
 		return e
 	}
-	if op.Kind == UpdatePrincipal {
+	// 正常本人换绑仍需原MFA和当前多人审批，不修改角色权限；丢失恢复不能自行授权。
+	if op.Kind == MaintainAccount && op.Maintenance != nil && op.Maintenance.Mode == "bind" && op.Maintenance.Target == actor {
+		return nil
+	}
+	if governanceTarget(op) != "" {
 		var targetPerson string
-		if e := tx.QueryRowContext(ctx, `SELECT person_id FROM keygate.principals WHERE environment=$1 AND principal_id=$2`, c.environment, g.Target).Scan(&targetPerson); e != nil {
+		if e := tx.QueryRowContext(ctx, `SELECT person_id FROM keygate.principals WHERE environment=$1 AND principal_id=$2`, c.environment, governanceTarget(op)).Scan(&targetPerson); e != nil {
 			return e
 		}
 		if person == targetPerson {
 			return ErrDenied
 		}
 	}
-	if op.Kind == CreatePrincipal && person == g.PersonID {
+	if op.Kind == CreatePrincipal && g != nil && person == g.PersonID {
 		return ErrDenied
 	}
 	return nil
 }
 func (c *DevelopmentControl) applyGovernance(ctx context.Context, tx *sql.Tx, op ControlOperation, approval, actor, trace string) error {
+	if op.Kind == MaintainAccount {
+		return c.applyAccountMaintenance(ctx, tx, op, approval, actor, trace)
+	}
 	g := op.Governance
 	target := g.Target
 	switch op.Kind {
@@ -303,4 +310,14 @@ func (c *DevelopmentControl) requestViewer(ctx context.Context, tx *sql.Tx, acto
 		return c.has(ctx, tx, actor, access.Viewer, "") && (c.has(ctx, tx, actor, access.PolicyAdmin, "") || c.has(ctx, tx, actor, access.Auditor, ""))
 	}
 	return c.has(ctx, tx, actor, access.Viewer, op.ClientID)
+}
+
+func governanceTarget(op ControlOperation) string {
+	if op.Maintenance != nil {
+		return op.Maintenance.Target
+	}
+	if op.Governance != nil && op.Kind == UpdatePrincipal {
+		return op.Governance.Target
+	}
+	return ""
 }

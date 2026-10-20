@@ -23,6 +23,7 @@ type TableCheckpoint struct {
 type checkpointTable struct{ name, where string }
 
 var checkpointTables = []checkpointTable{
+	{"account_setups", "environment=$1"}, {"account_setup_factors", "environment=$1"},
 	{"principal_session_blocks", "environment=$1"},
 	{"runtime_cluster", "$1::text<>''"}, {"runtime_nodes", "$1::text<>''"},
 	{"security_domains", "environment=$1"}, {"principals", "environment=$1"}, {"role_grants", "environment=$1"},
@@ -158,6 +159,10 @@ func (s *Store) QuarantineRestored(ctx context.Context, expected SafetyCheckpoin
 		return e
 	}
 	environment := expected.Environment
+	// 隔离恢复必须同时作废已执行审批产生的一次性账号设置授权。
+	if _, e = tx.ExecContext(ctx, `UPDATE keygate.account_setups SET consumed=true WHERE environment=$1 AND NOT consumed`, environment); e != nil {
+		return e
+	}
 	for _, table := range []string{"mfa_challenges", "mfa_proofs"} {
 		if _, e = tx.ExecContext(ctx, `DELETE FROM keygate.`+table+` WHERE environment=$1`, environment); e != nil {
 			return e
@@ -210,7 +215,7 @@ func (s *Store) QuarantineRestored(ctx context.Context, expected SafetyCheckpoin
 // CheckQuarantinedOffline 供显式恢复启动验证已隔离状态；必须先由启动方验签并核对外部最新 checkpoint。
 func (c *DevelopmentControl) CheckQuarantinedOffline(ctx context.Context) error {
 	var safe bool
-	e := c.store.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM keygate.security_domains WHERE environment=$1) AND EXISTS(SELECT 1 FROM keygate.scoped_audit s JOIN keygate.audit_events a ON a.event_id=s.event_id WHERE s.environment=$1 AND a.action='restore_quarantine') AND NOT EXISTS(SELECT 1 FROM keygate.mfa_proofs WHERE environment=$1) AND NOT EXISTS(SELECT 1 FROM keygate.mfa_challenges WHERE environment=$1) AND NOT EXISTS(SELECT 1 FROM keygate.browser_sessions WHERE environment=$1 AND revoked_at IS NULL) AND NOT EXISTS(SELECT 1 FROM keygate.provider_policies WHERE environment=$1 AND enabled) AND NOT EXISTS(SELECT 1 FROM keygate.clients WHERE environment=$1 AND state='enabled') AND NOT EXISTS(SELECT 1 FROM keygate.control_requests WHERE environment=$1 AND NOT executed AND decision IN ('pending','approved')) AND NOT EXISTS(SELECT 1 FROM keygate.sessions WHERE principal_id IN(SELECT principal_id FROM keygate.principals WHERE environment=$1) AND revoked_at IS NULL)`, c.environment).Scan(&safe)
+	e := c.store.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM keygate.security_domains WHERE environment=$1) AND EXISTS(SELECT 1 FROM keygate.scoped_audit s JOIN keygate.audit_events a ON a.event_id=s.event_id WHERE s.environment=$1 AND a.action='restore_quarantine') AND NOT EXISTS(SELECT 1 FROM keygate.account_setups WHERE environment=$1 AND NOT consumed) AND NOT EXISTS(SELECT 1 FROM keygate.mfa_proofs WHERE environment=$1) AND NOT EXISTS(SELECT 1 FROM keygate.mfa_challenges WHERE environment=$1) AND NOT EXISTS(SELECT 1 FROM keygate.browser_sessions WHERE environment=$1 AND revoked_at IS NULL) AND NOT EXISTS(SELECT 1 FROM keygate.provider_policies WHERE environment=$1 AND enabled) AND NOT EXISTS(SELECT 1 FROM keygate.clients WHERE environment=$1 AND state='enabled') AND NOT EXISTS(SELECT 1 FROM keygate.control_requests WHERE environment=$1 AND NOT executed AND decision IN ('pending','approved')) AND NOT EXISTS(SELECT 1 FROM keygate.sessions WHERE principal_id IN(SELECT principal_id FROM keygate.principals WHERE environment=$1) AND revoked_at IS NULL)`, c.environment).Scan(&safe)
 	if e != nil {
 		return e
 	}
