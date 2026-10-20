@@ -77,10 +77,13 @@ func (c *DevelopmentControl) ConsoleIdentity(ctx context.Context, token string) 
 }
 
 type ConsolePerson struct {
-	PrincipalID string         `json:"principalId"`
-	PersonID    string         `json:"personId"`
-	Enabled     bool           `json:"enabled"`
-	Grants      []ConsoleGrant `json:"grants"`
+	Revision      string         `json:"revision"`
+	Issuer        string         `json:"issuer"`
+	MFAConfigured bool           `json:"mfaConfigured"`
+	PrincipalID   string         `json:"principalId"`
+	PersonID      string         `json:"personId"`
+	Enabled       bool           `json:"enabled"`
+	Grants        []ConsoleGrant `json:"grants"`
 }
 type ConsoleSettings struct {
 	Version    string          `json:"version"`
@@ -125,13 +128,13 @@ func (c *DevelopmentControl) ConsoleSettings(ctx context.Context, token string) 
 	if e != nil {
 		return out, e
 	}
-	rows, e = tx.QueryContext(ctx, `SELECT principal_id,person_id,enabled FROM keygate.principals WHERE environment=$1 ORDER BY person_id,principal_id LIMIT 128`, c.environment)
+	rows, e = tx.QueryContext(ctx, `SELECT p.principal_id,p.person_id,p.enabled,p.revision::text,p.issuer,EXISTS(SELECT 1 FROM keygate.mfa_policies m WHERE m.environment=p.environment AND m.principal_id=p.principal_id) FROM keygate.principals p WHERE environment=$1 ORDER BY person_id,principal_id LIMIT 128`, c.environment)
 	if e != nil {
 		return out, e
 	}
 	for rows.Next() {
 		var p ConsolePerson
-		if e = rows.Scan(&p.PrincipalID, &p.PersonID, &p.Enabled); e != nil {
+		if e = rows.Scan(&p.PrincipalID, &p.PersonID, &p.Enabled, &p.Revision, &p.Issuer, &p.MFAConfigured); e != nil {
 			rows.Close()
 			return out, e
 		}

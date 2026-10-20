@@ -214,7 +214,7 @@ func (c *DevelopmentControl) identityActor(ctx context.Context, tx *sql.Tx, toke
 	err := tx.QueryRowContext(ctx, `SELECT p.principal_id,p.person_id,p.revision,
  s.authenticated_at<=clock_timestamp() AND s.authenticated_at>clock_timestamp()-interval '5 minutes'
  FROM keygate.sessions s JOIN keygate.principals p ON p.principal_id=s.principal_id AND p.environment=$1
- WHERE s.token_hash=$2 AND s.profile_hash=$3 AND s.revoked_at IS NULL AND s.expires_at>clock_timestamp() AND p.enabled FOR UPDATE OF s,p`, c.environment, h[:], c.profile).Scan(&a.id, &a.person, &a.revision, &fresh)
+ WHERE s.token_hash=$2 AND s.profile_hash=$3 AND s.revoked_at IS NULL AND s.expires_at>clock_timestamp() AND p.enabled AND NOT EXISTS(SELECT 1 FROM keygate.principal_session_blocks b WHERE b.environment=$1 AND b.token_hash=s.token_hash) FOR UPDATE OF s,p`, c.environment, h[:], c.profile).Scan(&a.id, &a.person, &a.revision, &fresh)
 	if errors.Is(err, sql.ErrNoRows) || (err == nil && sensitive && !fresh) {
 		return a, ErrDenied
 	}

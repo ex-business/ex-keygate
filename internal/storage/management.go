@@ -115,7 +115,7 @@ func (c *DevelopmentControl) Requests(ctx context.Context, token string) ([]Cont
 		if e != nil {
 			return nil, e
 		}
-		permitted := c.has(ctx, tx, a.id, access.Viewer, m.Operation.ClientID) || (a.id == m.Applicant.PrincipalID && c.has(ctx, tx, a.id, access.Requester, m.Operation.ClientID))
+		permitted := c.requestViewer(ctx, tx, a.id, m.Operation) || (a.id == m.Applicant.PrincipalID && c.has(ctx, tx, a.id, access.Requester, operationScope(m.Operation)))
 		if !permitted {
 			if _, e = c.currentMember(ctx, tx, m, a.id); e == nil {
 				permitted = true
@@ -140,7 +140,7 @@ func (c *DevelopmentControl) executionActor(ctx context.Context, tx *sql.Tx, tok
 	if a.id != m.Applicant.PrincipalID {
 		return ErrDenied
 	}
-	current, e := c.eligible(ctx, tx, a.id, access.Requester, m.Operation.ClientID)
+	current, e := c.eligible(ctx, tx, a.id, access.Requester, operationScope(m.Operation))
 	if e != nil {
 		return e
 	}

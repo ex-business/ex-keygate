@@ -27,30 +27,31 @@ const (
 )
 
 type ControlOperation struct {
-	TrustCertificate            []byte `json:"trustCertificate,omitempty"`
-	TrustProof                  []byte `json:"trustProof,omitempty"`
-	TrustRootFingerprint        string `json:"trustRootFingerprint,omitempty"`
-	ProviderID                  string `json:"providerId,omitempty"`
-	ProviderDigest              string `json:"providerDigest,omitempty"`
-	RotationReason              string `json:"rotationReason,omitempty"`
-	RecoveryID                  string `json:"recoveryId,omitempty"`
-	IncidentID                  string `json:"incidentId,omitempty"`
-	EvidenceHash                string `json:"evidenceHash,omitempty"`
-	RotationOf                  uint64 `json:"rotationOf,string,omitempty"`
-	RecipientSigningKey         string `json:"recipientSigningKey,omitempty"`
-	RecipientSigningFingerprint string `json:"recipientSigningFingerprint,omitempty"`
-	Kind                        string `json:"kind"`
-	ClientID                    string `json:"clientId"`
-	ExpectedRevision            uint64 `json:"expectedRevision,string"`
-	Name                        string `json:"name"`
-	ProfileID                   string `json:"profileId"`
-	ProfileVersion              uint64 `json:"profileVersion,string"`
-	KeyVersion                  uint64 `json:"keyVersion,string,omitempty"`
-	RootID                      string `json:"rootId,omitempty"`
-	RecipientPublicKey          string `json:"recipientPublicKey,omitempty"`
-	RecipientFingerprint        string `json:"recipientFingerprint,omitempty"`
-	NotAfter                    string `json:"notAfter,omitempty"`
-	RetireAt                    string `json:"retireAt,omitempty"`
+	Governance                  *GovernanceChange `json:"governance,omitempty"`
+	TrustCertificate            []byte            `json:"trustCertificate,omitempty"`
+	TrustProof                  []byte            `json:"trustProof,omitempty"`
+	TrustRootFingerprint        string            `json:"trustRootFingerprint,omitempty"`
+	ProviderID                  string            `json:"providerId,omitempty"`
+	ProviderDigest              string            `json:"providerDigest,omitempty"`
+	RotationReason              string            `json:"rotationReason,omitempty"`
+	RecoveryID                  string            `json:"recoveryId,omitempty"`
+	IncidentID                  string            `json:"incidentId,omitempty"`
+	EvidenceHash                string            `json:"evidenceHash,omitempty"`
+	RotationOf                  uint64            `json:"rotationOf,string,omitempty"`
+	RecipientSigningKey         string            `json:"recipientSigningKey,omitempty"`
+	RecipientSigningFingerprint string            `json:"recipientSigningFingerprint,omitempty"`
+	Kind                        string            `json:"kind"`
+	ClientID                    string            `json:"clientId"`
+	ExpectedRevision            uint64            `json:"expectedRevision,string"`
+	Name                        string            `json:"name"`
+	ProfileID                   string            `json:"profileId"`
+	ProfileVersion              uint64            `json:"profileVersion,string"`
+	KeyVersion                  uint64            `json:"keyVersion,string,omitempty"`
+	RootID                      string            `json:"rootId,omitempty"`
+	RecipientPublicKey          string            `json:"recipientPublicKey,omitempty"`
+	RecipientFingerprint        string            `json:"recipientFingerprint,omitempty"`
+	NotAfter                    string            `json:"notAfter,omitempty"`
+	RetireAt                    string            `json:"retireAt,omitempty"`
 }
 
 type controlMember struct {
@@ -76,12 +77,13 @@ type controlManifest struct {
 	Expires        string                  `json:"expires"`
 }
 type ControlRequest struct {
-	Progress *ApprovalProgress `json:"progress,omitempty"`
-	ID       string            `json:"id"`
-	Digest   string            `json:"digest"`
-	Manifest json.RawMessage   `json:"manifest"`
-	Decision string            `json:"decision"`
-	Executed bool              `json:"executed"`
+	Invalidated bool              `json:"invalidated,omitempty"`
+	Progress    *ApprovalProgress `json:"progress,omitempty"`
+	ID          string            `json:"id"`
+	Digest      string            `json:"digest"`
+	Manifest    json.RawMessage   `json:"manifest"`
+	Decision    string            `json:"decision"`
+	Executed    bool              `json:"executed"`
 }
 
 func digestBytes(raw []byte) string { h := sha256.Sum256(raw); return hex.EncodeToString(h[:]) }
@@ -114,6 +116,12 @@ func (c *DevelopmentControl) eligible(ctx context.Context, tx *sql.Tx, id string
 }
 func (c *DevelopmentControl) validateOperation(ctx context.Context, tx *sql.Tx, op ControlOperation) error {
 	if !access.ValidID(op.ClientID) || op.ExpectedRevision > 9007199254740991 {
+		return ErrInvalid
+	}
+	if isGovernance(op.Kind) {
+		return c.validateGovernanceOperation(ctx, tx, op)
+	}
+	if op.Governance != nil {
 		return ErrInvalid
 	}
 	if op.Kind == PublishTrustCertificate || op.Kind == RenewTrustCertificate || op.Kind == UpdateTrustStatusCertificate || op.Kind == DisableTrustService {
@@ -199,15 +207,15 @@ func (c *DevelopmentControl) Submit(ctx context.Context, token string, op Contro
 	if e != nil {
 		return ControlRequest{}, e
 	}
-	applicant, e := c.eligible(ctx, tx, a.id, access.Requester, op.ClientID)
+	applicant, e := c.eligible(ctx, tx, a.id, access.Requester, operationScope(op))
 	if e != nil {
 		return ControlRequest{}, e
 	}
-	if (op.Kind == ProvisionRoot || op.Kind == EnableProvider) && applicant.GrantScope != "" {
+	if (op.Kind == ProvisionRoot || op.Kind == EnableProvider || isGovernance(op.Kind)) && applicant.GrantScope != "" {
 		return ControlRequest{}, ErrDenied
 	}
 	var admin *controlMember
-	if op.Kind == EnableProvider {
+	if op.Kind == EnableProvider || isGovernance(op.Kind) {
 		m, e := c.eligible(ctx, tx, a.id, access.PolicyAdmin, "")
 		if e != nil {
 			return ControlRequest{}, e
@@ -216,6 +224,9 @@ func (c *DevelopmentControl) Submit(ctx context.Context, token string, op Contro
 			return ControlRequest{}, ErrDenied
 		}
 		admin = &m
+	}
+	if e = c.governanceApplicant(ctx, tx, op, a.id); e != nil {
+		return ControlRequest{}, e
 	}
 	var previous, previousDigest string
 	e = tx.QueryRowContext(ctx, `SELECT request_id,parameters_digest FROM keygate.control_idempotency WHERE environment=$1 AND principal_id=$2 AND idempotency_key=$3`, c.environment, a.id, idempotency).Scan(&previous, &previousDigest)
@@ -265,7 +276,7 @@ func (c *DevelopmentControl) Submit(ctx context.Context, token string, op Contro
 	var members []controlMember
 	seen := map[string]bool{a.person: true}
 	for _, id := range ids {
-		m, e := c.eligible(ctx, tx, id, access.Approver, op.ClientID)
+		m, e := c.eligible(ctx, tx, id, access.Approver, operationScope(op))
 		if errors.Is(e, ErrDenied) {
 			if sequential {
 				return ControlRequest{}, ErrDenied
@@ -275,11 +286,21 @@ func (c *DevelopmentControl) Submit(ctx context.Context, token string, op Contro
 		if e != nil {
 			return ControlRequest{}, e
 		}
-		if (op.Kind == ProvisionRoot || op.Kind == EnableProvider) && m.GrantScope != "" {
+		if (op.Kind == ProvisionRoot || op.Kind == EnableProvider || isGovernance(op.Kind)) && m.GrantScope != "" {
 			if sequential {
 				return ControlRequest{}, ErrDenied
 			}
 			continue
+		}
+		// 人员变更受益人及其别名不参加本次表决，门槛仍使用当前策略，不自动降低。
+		if op.Kind == UpdatePrincipal && op.Governance != nil {
+			var targetPerson string
+			if e = tx.QueryRowContext(ctx, `SELECT person_id FROM keygate.principals WHERE environment=$1 AND principal_id=$2`, c.environment, op.Governance.Target).Scan(&targetPerson); e != nil {
+				return ControlRequest{}, e
+			}
+			if targetPerson == m.PersonID {
+				continue
+			}
 		}
 		if sequential && seen[m.PersonID] {
 			return ControlRequest{}, ErrDenied
@@ -353,6 +374,13 @@ func (c *DevelopmentControl) loadRequest(ctx context.Context, tx *sql.Tx, id str
 	if e != nil || string(canonical) != string(r.Manifest) || m.Schema != "keygate-control-jcs-v1" || m.Environment != c.environment || m.RequestID != id {
 		return r, m, ErrConflict
 	}
+	if !r.Executed && (r.Decision == "pending" || r.Decision == "approved") {
+		var currentVersion int64
+		if e = tx.QueryRowContext(ctx, `SELECT version FROM keygate.control_policies WHERE environment=$1`, c.environment).Scan(&currentVersion); e != nil {
+			return r, m, e
+		}
+		r.Invalidated = currentVersion != m.PolicyVersion
+	}
 	if e = c.approvalProgress(ctx, tx, &r, m); e != nil {
 		return r, m, e
 	}
@@ -375,7 +403,7 @@ func (c *DevelopmentControl) liveManifest(ctx context.Context, tx *sql.Tx, m con
 	if version != m.PolicyVersion || threshold != m.Threshold {
 		return ErrConflict
 	}
-	applicant, e := c.eligible(ctx, tx, m.Applicant.PrincipalID, access.Requester, m.Operation.ClientID)
+	applicant, e := c.eligible(ctx, tx, m.Applicant.PrincipalID, access.Requester, operationScope(m.Operation))
 	if e != nil {
 		return e
 	}
@@ -391,7 +419,7 @@ func (c *DevelopmentControl) liveManifest(ctx context.Context, tx *sql.Tx, m con
 			return ErrConflict
 		}
 	}
-	if m.Operation.Kind == EnableProvider {
+	if m.Operation.Kind == EnableProvider || isGovernance(m.Operation.Kind) {
 		admin, e := c.eligible(ctx, tx, m.Applicant.PrincipalID, access.PolicyAdmin, "")
 		if e != nil {
 			return e
@@ -413,7 +441,7 @@ func (c *DevelopmentControl) currentMember(ctx context.Context, tx *sql.Tx, m co
 	if snapshot.PrincipalID == "" || snapshot.PersonID == m.Applicant.PersonID {
 		return snapshot, ErrDenied
 	}
-	current, e := c.eligible(ctx, tx, id, access.Approver, m.Operation.ClientID)
+	current, e := c.eligible(ctx, tx, id, access.Approver, operationScope(m.Operation))
 	if e != nil {
 		return current, e
 	}
@@ -447,7 +475,7 @@ func (c *DevelopmentControl) Request(ctx context.Context, token, id string) (Con
 	if e != nil {
 		return ControlRequest{}, e
 	}
-	if !(a.id == m.Applicant.PrincipalID && c.has(ctx, tx, a.id, access.Requester, m.Operation.ClientID)) && !c.has(ctx, tx, a.id, access.Viewer, m.Operation.ClientID) {
+	if !(a.id == m.Applicant.PrincipalID && c.has(ctx, tx, a.id, access.Requester, operationScope(m.Operation))) && !c.requestViewer(ctx, tx, a.id, m.Operation) {
 		if _, e = c.currentMember(ctx, tx, m, a.id); e != nil {
 			return ControlRequest{}, ErrDenied
 		}
@@ -634,7 +662,11 @@ func (c *DevelopmentControl) executePreparedAs(ctx context.Context, id, digest, 
 		return e
 	}
 	op := m.Operation
-	if op.Kind == CreateClient {
+	if isGovernance(op.Kind) {
+		if e = c.applyGovernance(ctx, tx, op, id, m.Applicant.PrincipalID, trace); e != nil {
+			return e
+		}
+	} else if op.Kind == CreateClient {
 		result, e := tx.ExecContext(ctx, `INSERT INTO keygate.clients(environment,client_id,name,client_type,profile_id,profile_version,state) SELECT $1,$2,$3,client_type,profile_id,version,'enabled' FROM keygate.auth_profiles WHERE environment=$1 AND profile_id=$4 AND version=$5 AND enabled`, c.environment, op.ClientID, op.Name, op.ProfileID, op.ProfileVersion)
 		if e != nil {
 			return e
