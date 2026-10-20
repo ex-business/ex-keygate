@@ -41,7 +41,7 @@ func randomRuntimeID(prefix string) string {
 	return prefix + hex.EncodeToString(b)
 }
 func absoluteSetting(s deployment.Settings) (deployment.Settings, error) {
-	values := []*string{&s.DatabaseFile, &s.SSOFile, &s.SSOSecretFile, &s.TLSDirectory, &s.PluginFile, &s.MFAPluginsFile, &s.ReminderFile, &s.Output}
+	values := []*string{&s.DatabaseFile, &s.SSOFile, &s.SSOSecretFile, &s.TLSDirectory, &s.PluginFile, &s.MFAPluginsFile, &s.ReminderFile, &s.Output, &s.ApprovalNotifyFile}
 	for _, p := range values {
 		if *p != "" {
 			v, e := filepath.Abs(*p)
@@ -136,7 +136,13 @@ func preparePersistent(ctx context.Context, action, dir, key, node, nextConfig, 
 			return nil, settings, deployment.ErrState
 		}
 		defer db.Close()
-		if e = storage.CheckRuntimeSchema(ctx, db); e != nil {
+		schemaVersion := storage.RuntimeSchemaVersion
+		if action == "plan" || action == "upgrade" {
+			if e = db.QueryRowContext(ctx, `SELECT schema_version FROM keygate.persistent_deployments WHERE environment=$1`, rt.index.Environment).Scan(&schemaVersion); e != nil {
+				return nil, settings, deployment.ErrState
+			}
+		}
+		if e = storage.CheckRuntimeSchemaVersion(ctx, db, schemaVersion); e != nil {
 			return nil, settings, errors.New("持久部署数据库版本不兼容，需受控迁移后再启动")
 		}
 		store, _ := storage.New(db)
@@ -148,7 +154,7 @@ func preparePersistent(ctx context.Context, action, dir, key, node, nextConfig, 
 		if e != nil {
 			return nil, settings, e
 		}
-		if rt.previous.ID != rt.index.ID || rt.previous.ConfigHash != rt.revision.Digest() || rt.previous.Protocol != storage.RuntimeProtocol || rt.previous.SchemaVersion != storage.RuntimeSchemaVersion || rt.revision.Protocol != storage.RuntimeProtocol || rt.revision.Schema != storage.RuntimeSchemaVersion || rt.revision.Settings.DatabaseFile != rt.index.DatabaseFile {
+		if rt.previous.ID != rt.index.ID || rt.previous.ConfigHash != rt.revision.Digest() || rt.previous.Protocol != storage.RuntimeProtocol || rt.previous.SchemaVersion != schemaVersion || rt.revision.Protocol != storage.RuntimeProtocol || rt.revision.Schema != schemaVersion || rt.revision.Settings.DatabaseFile != rt.index.DatabaseFile {
 			return nil, settings, deployment.ErrState
 		}
 		if action == "run" {
@@ -161,6 +167,7 @@ func preparePersistent(ctx context.Context, action, dir, key, node, nextConfig, 
 		} else {
 			next := rt.revision
 			next.Number++
+			next.Schema = storage.RuntimeSchemaVersion
 			next.Binary = binary
 			if nextConfig != "" {
 				raw, e := readPrivate(nextConfig)

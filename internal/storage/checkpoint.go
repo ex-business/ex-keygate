@@ -23,6 +23,7 @@ type TableCheckpoint struct {
 type checkpointTable struct{ name, where string }
 
 var checkpointTables = []checkpointTable{
+	{"approval_notifications", "environment=$1"},
 	{"persistent_deployments", "environment=$1"},
 	{"account_setups", "environment=$1"}, {"account_setup_factors", "environment=$1"},
 	{"principal_session_blocks", "environment=$1"},
@@ -53,7 +54,15 @@ func captureSafety(ctx context.Context, tx *sql.Tx, environment string) (SafetyC
 	if e := tx.QueryRowContext(ctx, `SELECT clock_timestamp()`).Scan(&out.CapturedAt); e != nil {
 		return out, e
 	}
+	var schemaVersion int
+	if e := tx.QueryRowContext(ctx, `SELECT max(version) FROM keygate.schema_migrations`).Scan(&schemaVersion); e != nil {
+		return out, e
+	}
 	for _, table := range checkpointTables {
+		// schema21签名检查点用于原子升级，唯独22新增的通知表尚不存在；其他缺失仍失败。
+		if schemaVersion == 21 && table.name == "approval_notifications" {
+			continue
+		}
 		rows, e := tx.QueryContext(ctx, `SELECT to_jsonb(x)::text FROM (SELECT * FROM keygate.`+table.name+` WHERE `+table.where+`) x ORDER BY to_jsonb(x)::text COLLATE "C"`, environment)
 		if e != nil {
 			return out, e
@@ -143,7 +152,15 @@ func (s *Store) QuarantineRestored(ctx context.Context, expected SafetyCheckpoin
 	}
 	// 固定表清单阻止核对与隔离之间的写竞争；维护前必须停服。
 	// 任一表仍被在线事务占用就立即拒绝并回滚全部锁，避免持有前序表锁等待后序表而形成锁环。
+	var schemaVersion int
+	if e := tx.QueryRowContext(ctx, `SELECT max(version) FROM keygate.schema_migrations`).Scan(&schemaVersion); e != nil {
+		return e
+	}
 	for _, table := range checkpointTables {
+		// schema21签名检查点用于原子升级，唯独22新增的通知表尚不存在；其他缺失仍失败。
+		if schemaVersion == 21 && table.name == "approval_notifications" {
+			continue
+		}
 		if _, e = tx.ExecContext(ctx, `LOCK TABLE keygate.`+table.name+` IN EXCLUSIVE MODE NOWAIT`); e != nil {
 			return e
 		}
@@ -160,6 +177,11 @@ func (s *Store) QuarantineRestored(ctx context.Context, expected SafetyCheckpoin
 		return e
 	}
 	environment := expected.Environment
+	if schemaVersion >= 22 {
+		if _, e = tx.ExecContext(ctx, `UPDATE keygate.approval_notifications SET state='obsolete',lease_until=NULL WHERE environment=$1 AND state IN ('pending','sending')`, environment); e != nil {
+			return e
+		}
+	}
 	// 隔离恢复必须同时作废已执行审批产生的一次性账号设置授权。
 	if _, e = tx.ExecContext(ctx, `UPDATE keygate.account_setups SET consumed=true WHERE environment=$1 AND NOT consumed`, environment); e != nil {
 		return e

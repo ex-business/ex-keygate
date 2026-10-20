@@ -78,13 +78,17 @@ type controlManifest struct {
 	Expires        string                  `json:"expires"`
 }
 type ControlRequest struct {
-	Invalidated bool              `json:"invalidated,omitempty"`
-	Progress    *ApprovalProgress `json:"progress,omitempty"`
-	ID          string            `json:"id"`
-	Digest      string            `json:"digest"`
-	Manifest    json.RawMessage   `json:"manifest"`
-	Decision    string            `json:"decision"`
-	Executed    bool              `json:"executed"`
+	Expired          bool              `json:"expired,omitempty"`
+	WithdrawnBy      string            `json:"withdrawnBy,omitempty"`
+	WithdrawalReason string            `json:"withdrawalReason,omitempty"`
+	WithdrawnAt      *time.Time        `json:"withdrawnAt,omitempty"`
+	Invalidated      bool              `json:"invalidated,omitempty"`
+	Progress         *ApprovalProgress `json:"progress,omitempty"`
+	ID               string            `json:"id"`
+	Digest           string            `json:"digest"`
+	Manifest         json.RawMessage   `json:"manifest"`
+	Decision         string            `json:"decision"`
+	Executed         bool              `json:"executed"`
 }
 
 func digestBytes(raw []byte) string { h := sha256.Sum256(raw); return hex.EncodeToString(h[:]) }
@@ -349,6 +353,9 @@ func (c *DevelopmentControl) Submit(ctx context.Context, token string, op Contro
 	if _, e = tx.ExecContext(ctx, `INSERT INTO keygate.control_idempotency(environment,principal_id,idempotency_key,parameters_digest,request_id) VALUES($1,$2,$3,$4,$5)`, c.environment, a.id, idempotency, parameterDigest, id); e != nil {
 		return ControlRequest{}, e
 	}
+	if e = c.syncApprovalNotifications(ctx, tx, id); e != nil {
+		return ControlRequest{}, e
+	}
 	if e = c.audit(ctx, tx, trace, a.id, "control_submit", id, "pending"); e != nil {
 		return ControlRequest{}, e
 	}
@@ -365,7 +372,7 @@ func (c *DevelopmentControl) Submit(ctx context.Context, token string, op Contro
 func (c *DevelopmentControl) loadRequest(ctx context.Context, tx *sql.Tx, id string) (ControlRequest, controlManifest, error) {
 	var r ControlRequest
 	var m controlManifest
-	e := tx.QueryRowContext(ctx, `SELECT request_id,digest,manifest,decision,executed FROM keygate.control_requests WHERE environment=$1 AND request_id=$2 FOR UPDATE`, c.environment, id).Scan(&r.ID, &r.Digest, &r.Manifest, &r.Decision, &r.Executed)
+	e := tx.QueryRowContext(ctx, `SELECT request_id,digest,manifest,decision,executed,expires_at<=clock_timestamp(),withdrawn_by,withdrawal_reason,withdrawn_at FROM keygate.control_requests WHERE environment=$1 AND request_id=$2 FOR UPDATE`, c.environment, id).Scan(&r.ID, &r.Digest, &r.Manifest, &r.Decision, &r.Executed, &r.Expired, &r.WithdrawnBy, &r.WithdrawalReason, &r.WithdrawnAt)
 	if e != nil {
 		return r, m, e
 	}
@@ -390,6 +397,9 @@ func (c *DevelopmentControl) loadRequest(ctx context.Context, tx *sql.Tx, id str
 	}
 	if e = c.approvalProgress(ctx, tx, &r, m); e != nil {
 		return r, m, e
+	}
+	if (r.Expired || r.Invalidated) && r.Progress != nil {
+		r.Progress.CurrentPrincipalID = ""
 	}
 	return r, m, nil
 }
@@ -562,6 +572,9 @@ func (c *DevelopmentControl) Vote(ctx context.Context, token, id, digest string,
 			return ControlRequest{}, e
 		}
 	}
+	if e = c.syncApprovalNotifications(ctx, tx, id); e != nil {
+		return ControlRequest{}, e
+	}
 	if e = tx.Commit(); e != nil {
 		return ControlRequest{}, e
 	}
@@ -701,6 +714,9 @@ func (c *DevelopmentControl) executePreparedAs(ctx context.Context, id, digest, 
 		return e
 	}
 	if _, e = tx.ExecContext(ctx, `UPDATE keygate.control_requests SET executed=true WHERE environment=$1 AND request_id=$2`, c.environment, id); e != nil {
+		return e
+	}
+	if e = c.syncApprovalNotifications(ctx, tx, id); e != nil {
 		return e
 	}
 	if e = c.audit(ctx, tx, trace, "executor-service", "control_execute", id, "success"); e != nil {

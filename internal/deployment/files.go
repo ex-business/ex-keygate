@@ -26,16 +26,17 @@ var labelName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,255}$`)
 var name = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$`)
 
 type Settings struct {
-	Port           int    `json:"port"`
-	DatabaseFile   string `json:"databaseFile"`
-	SSOFile        string `json:"ssoFile"`
-	SSOSecretFile  string `json:"ssoSecretFile"`
-	TLSDirectory   string `json:"tlsDirectory"`
-	PluginFile     string `json:"pluginFile"`
-	MFAPluginsFile string `json:"mfaPluginsFile"`
-	TrustDirectory string `json:"trustDirectory"`
-	ReminderFile   string `json:"reminderFile"`
-	Output         string `json:"output"`
+	ApprovalNotifyFile string `json:"approvalNotifyFile,omitempty"`
+	Port               int    `json:"port"`
+	DatabaseFile       string `json:"databaseFile"`
+	SSOFile            string `json:"ssoFile"`
+	SSOSecretFile      string `json:"ssoSecretFile"`
+	TLSDirectory       string `json:"tlsDirectory"`
+	PluginFile         string `json:"pluginFile"`
+	MFAPluginsFile     string `json:"mfaPluginsFile"`
+	TrustDirectory     string `json:"trustDirectory"`
+	ReminderFile       string `json:"reminderFile"`
+	Output             string `json:"output"`
 }
 type Index struct {
 	Format           string `json:"format"`
@@ -313,7 +314,7 @@ func Dependencies(s Settings) (map[string]string, error) {
 		}
 		return nil
 	}
-	for _, p := range []string{s.DatabaseFile, s.SSOFile, s.SSOSecretFile, s.PluginFile, s.MFAPluginsFile, s.ReminderFile} {
+	for _, p := range []string{s.DatabaseFile, s.SSOFile, s.SSOSecretFile, s.PluginFile, s.MFAPluginsFile, s.ReminderFile, s.ApprovalNotifyFile} {
 		if e := add(p); e != nil {
 			return nil, e
 		}

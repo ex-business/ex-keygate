@@ -54,6 +54,7 @@ func run() error {
 	runtimeNext := flag.String("runtime-next-config", "", "受控升级候选Settings JSON，不包含密钥材料")
 	runtimeCheckpoint := flag.String("runtime-checkpoint", "", "停服后的外部签名安全检查点")
 	runtimePublicKey := flag.String("runtime-public-key", "", "独立固定的检查点校验公钥")
+	approvalNotifyFile := flag.String("approval-notify-plugin-file", "", "审批通知HTTPS/mTLS插件私有配置，省略时仅保留站内通知")
 	reminderFile := flag.String("trust-reminder-plugin-file", "", "证书提醒HTTPS/mTLS插件私有配置文件；省略时仅保留站内提醒")
 	trustDirectory := flag.String("trust-directory", "", "应用根及专用状态密钥私有目录；多个目录用逗号分隔，禁止包含根私钥")
 	localAccountsFile := flag.String("local-accounts-file", "", "受控本地账号配置，仅含口令摘要（私有文件）")
@@ -91,7 +92,7 @@ func run() error {
 		defer prepareCancel()
 		var settings deployment.Settings
 		var e error
-		rt, settings, e = preparePersistent(prepareCtx, *runtimeAction, *runtimeDirectory, *runtimeKey, *runtimeNode, *runtimeNext, *runtimeCheckpoint, *runtimePublicKey, deployment.Settings{Port: *port, DatabaseFile: *databaseFile, SSOFile: *ssoFile, SSOSecretFile: *ssoSecretFile, TLSDirectory: *tlsDirectory, PluginFile: *pluginFile, MFAPluginsFile: *mfaPluginsFile, TrustDirectory: *trustDirectory, ReminderFile: *reminderFile, Output: *output})
+		rt, settings, e = preparePersistent(prepareCtx, *runtimeAction, *runtimeDirectory, *runtimeKey, *runtimeNode, *runtimeNext, *runtimeCheckpoint, *runtimePublicKey, deployment.Settings{Port: *port, DatabaseFile: *databaseFile, SSOFile: *ssoFile, SSOSecretFile: *ssoSecretFile, TLSDirectory: *tlsDirectory, PluginFile: *pluginFile, MFAPluginsFile: *mfaPluginsFile, TrustDirectory: *trustDirectory, ReminderFile: *reminderFile, Output: *output, ApprovalNotifyFile: *approvalNotifyFile})
 		if e != nil {
 			return e
 		}
@@ -105,6 +106,7 @@ func run() error {
 		*mfaPluginsFile = settings.MFAPluginsFile
 		*trustDirectory = settings.TrustDirectory
 		*reminderFile = settings.ReminderFile
+		*approvalNotifyFile = settings.ApprovalNotifyFile
 		*output = settings.Output
 		*enableFlow = true
 		if rt.action != "init" {
@@ -203,7 +205,11 @@ func run() error {
 	}
 	// 此命令仅管理开发数据库；生产迁移不从这里执行。
 	if rt != nil && rt.action != "init" {
-		err = storage.CheckRuntimeSchema(startup, db)
+		expectedSchema := storage.RuntimeSchemaVersion
+		if rt.action == "plan" || rt.action == "upgrade" {
+			expectedSchema = rt.previous.SchemaVersion
+		}
+		err = storage.CheckRuntimeSchemaVersion(startup, db, expectedSchema)
 	} else {
 		err = storage.Migrate(startup, db)
 	}
@@ -394,6 +400,23 @@ func run() error {
 		return nil
 	}
 
+	var approvalPlugin storage.ApprovalNotificationPlugin
+	if *approvalNotifyFile != "" {
+		raw, e := readPrivate(*approvalNotifyFile)
+		if e != nil {
+			return errors.New("审批通知插件配置不可用")
+		}
+		var cfg trustnotify.Config
+		if provider.DecodeStrict(raw, &cfg) != nil {
+			return errors.New("审批通知插件配置无效")
+		}
+		plugin, e := trustnotify.New(cfg)
+		if e != nil {
+			return e
+		}
+		defer plugin.Close()
+		approvalPlugin = plugin
+	}
 	var cert tls.Certificate
 	var publicCA []byte
 	if *tlsDirectory != "" {
@@ -441,6 +464,8 @@ func run() error {
 	} else {
 		close(leaseDone)
 	}
+	approvalDone := make(chan struct{})
+	go func() { defer close(approvalDone); service.RunApprovalNotifications(ctx, approvalPlugin) }()
 	maintenanceDone := make(chan struct{})
 	go func() { defer close(maintenanceDone); service.RunLifecycleMaintenance(ctx) }()
 	done := make(chan struct{})
@@ -464,6 +489,7 @@ func run() error {
 	stop()
 	<-done
 	<-leaseDone
+	<-approvalDone
 	<-maintenanceDone
 	<-reminderDone
 	if errors.Is(err, http.ErrServerClosed) {

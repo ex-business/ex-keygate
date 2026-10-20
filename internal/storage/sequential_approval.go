@@ -142,6 +142,9 @@ func (c *DevelopmentControl) SkipSequential(ctx context.Context, token, id, dige
 	if e = c.audit(ctx, tx, trace, a.id, "control_skip", id, "abstained"); e != nil {
 		return r, e
 	}
+	if e = c.syncApprovalNotifications(ctx, tx, id); e != nil {
+		return ControlRequest{}, e
+	}
 	if e = tx.Commit(); e != nil {
 		return ControlRequest{}, e
 	}

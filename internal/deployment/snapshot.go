@@ -86,7 +86,7 @@ func (f *Files) Snapshot(r Revision) (Settings, func(), error) {
 		}
 	}
 	s := r.Settings
-	for _, p := range []*string{&s.DatabaseFile, &s.SSOFile, &s.SSOSecretFile, &s.PluginFile, &s.MFAPluginsFile, &s.ReminderFile} {
+	for _, p := range []*string{&s.DatabaseFile, &s.SSOFile, &s.SSOSecretFile, &s.PluginFile, &s.MFAPluginsFile, &s.ReminderFile, &s.ApprovalNotifyFile} {
 		if *p != "" {
 			mapped, yes := paths[*p]
 			if !yes {

@@ -61,6 +61,27 @@ func TestReminderMTLSRetryPayloadAndTarget(t *testing.T) {
 	if len(bodies) != 2 || !bytes.Equal(bodies[0], bodies[1]) || bytes.Contains(bodies[0], []byte("attempts")) {
 		t.Fatal("重试载荷变化")
 	}
+
+	approval := storage.ApprovalNotification{ID: "stable-id", RequestID: "approval-1", RecipientID: "approver-1", Kind: "approval_turn", Digest: "public-digest", ExpiresAt: v.ExpiresAt, CreatedAt: v.ExpiresAt}
+	if e = plugin.SendApprovalNotification(context.Background(), approval); e != nil {
+		t.Fatal(e)
+	}
+	approval.Attempts = 2
+	if e = plugin.SendApprovalNotification(context.Background(), approval); e != nil {
+		t.Fatal(e)
+	}
+	if len(bodies) != 4 || !bytes.Equal(bodies[2], bodies[3]) || !bytes.Contains(bodies[2], []byte("/manage#approvals")) {
+		t.Fatal("审批提醒重试契约")
+	}
+	for _, forbidden := range []string{"attempts", "manifest", "password", "token", "email", "phone"} {
+		if bytes.Contains(bodies[2], []byte(forbidden)) {
+			t.Fatal("通知泄露额外字段")
+		}
+	}
+	code = 202
+	if e = plugin.SendApprovalNotification(context.Background(), approval); e == nil {
+		t.Fatal("未确认审批提醒仍记成功")
+	}
 	code = 202
 	if e = plugin.SendTrustReminder(context.Background(), v); e == nil {
 		t.Fatal("异步未确认投递仍记成功")

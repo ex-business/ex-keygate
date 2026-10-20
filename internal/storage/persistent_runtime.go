@@ -6,7 +6,7 @@ import (
 )
 
 const RuntimeProtocol = 1
-const RuntimeSchemaVersion = 21
+const RuntimeSchemaVersion = 22
 
 type PersistentDeployment struct {
 	Environment   string `json:"environment"`
@@ -20,6 +20,14 @@ type PersistentDeployment struct {
 
 // CheckRuntimeSchema 普通启动只读核验完整账本及校验和；未知未来版本、缺失迁移均拒绝，不自动修改数据库。
 func CheckRuntimeSchema(ctx context.Context, db *sql.DB) error {
+	return CheckRuntimeSchemaVersion(ctx, db, RuntimeSchemaVersion)
+}
+
+// CheckRuntimeSchemaVersion 仅允许当前22及显式支持的21升级源，仍逐条核验完整账本而不写DDL。
+func CheckRuntimeSchemaVersion(ctx context.Context, db *sql.DB, version int) error {
+	if version != RuntimeSchemaVersion && version != 21 {
+		return ErrConflict
+	}
 	tx, e := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if e != nil {
 		return e
@@ -29,11 +37,20 @@ func CheckRuntimeSchema(ctx context.Context, db *sql.DB) error {
 	if e = tx.QueryRowContext(ctx, `SELECT count(*),COALESCE(max(version),0) FROM keygate.schema_migrations`).Scan(&n, &max); e != nil {
 		return e
 	}
-	if n != RuntimeSchemaVersion || max != RuntimeSchemaVersion {
+	if n != version || max != version {
 		return ErrConflict
 	}
-	if e = migrateControl(ctx, tx); e != nil {
-		return e
+	for _, m := range controlMigrations() {
+		if m.version > version {
+			continue
+		}
+		var checksum string
+		if e = tx.QueryRowContext(ctx, `SELECT checksum FROM keygate.schema_migrations WHERE version=$1`, m.version).Scan(&checksum); e != nil {
+			return e
+		}
+		if checksum != digestBytes([]byte(m.body)) {
+			return ErrConflict
+		}
 	}
 	return tx.Commit()
 }
@@ -78,7 +95,7 @@ func (s *Store) RegisterPersistentDeploymentOffline(ctx context.Context, d Persi
 // UpgradePersistentDeploymentOffline 必须停服并使用外部签名检查点；所有旧节点须摘流或租约过期，代次切换使旧配置不能重新加入。
 // 检查点验证由调用者完成签名核验，此处在同一事务再次核对安全状态，避免检查与激活之间发生变更。
 func (s *Store) UpgradePersistentDeploymentOffline(ctx context.Context, old, next PersistentDeployment, expected SafetyCheckpoint, trace string) error {
-	if !validDeployment(next) || old.Environment != next.Environment || old.ID != next.ID || next.Revision != old.Revision+1 || old.ProfileHash != next.ProfileHash || expected.Environment != old.Environment || !identifier.MatchString(trace) {
+	if (old.SchemaVersion != 21 && old.SchemaVersion != RuntimeSchemaVersion) || !validDeployment(next) || old.Environment != next.Environment || old.ID != next.ID || next.Revision != old.Revision+1 || old.ProfileHash != next.ProfileHash || expected.Environment != old.Environment || !identifier.MatchString(trace) {
 		return ErrInvalid
 	}
 	tx, e := s.db.BeginTx(ctx, nil)
@@ -110,6 +127,12 @@ func (s *Store) UpgradePersistentDeploymentOffline(ctx context.Context, old, nex
 	}
 	if !matchingSafety(current, expected) {
 		return ErrConflict
+	}
+	// 在同一事务核验旧检查点后执行唯一受支持的21->22迁移，失败时DDL、发布修订和代次整体回滚。
+	if old.SchemaVersion == 21 {
+		if e = migrateControl(ctx, tx); e != nil {
+			return e
+		}
 	}
 	result, e := tx.ExecContext(ctx, `UPDATE keygate.persistent_deployments SET revision=$3,config_hash=$4,protocol=$5,schema_version=$6 WHERE environment=$1 AND deployment_id=$2 AND revision=$7 AND config_hash=$8 AND profile_hash=$9`, next.Environment, next.ID, next.Revision, next.ConfigHash, next.Protocol, next.SchemaVersion, old.Revision, old.ConfigHash, old.ProfileHash)
 	if e != nil {
