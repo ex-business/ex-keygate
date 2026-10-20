@@ -33,6 +33,7 @@ import (
 	"ex-keygate/internal/localcert"
 	"ex-keygate/internal/mfa"
 	"ex-keygate/internal/storage"
+	"ex-keygate/internal/trustnotify"
 	"ex-keygate/internal/webauth"
 	"ex-keygate/provider"
 	"ex-keygate/trustchain"
@@ -45,6 +46,7 @@ func main() {
 	}
 }
 func run() error {
+	reminderFile := flag.String("trust-reminder-plugin-file", "", "证书提醒HTTPS/mTLS插件私有配置文件；省略时仅保留站内提醒")
 	trustDirectory := flag.String("trust-directory", "", "应用根及专用状态密钥私有目录；多个目录用逗号分隔，禁止包含根私钥")
 	localAccountsFile := flag.String("local-accounts-file", "", "受控本地账号配置，仅含口令摘要（私有文件）")
 	tlsDirectory := flag.String("tls-dir", "", "本机固定TLS证书私有目录（cert.pem/key.pem/ca.pem）")
@@ -279,6 +281,23 @@ func run() error {
 		}
 	}
 
+	var reminderPlugin storage.TrustReminderPlugin
+	if *reminderFile != "" {
+		raw, e := readPrivate(*reminderFile)
+		if e != nil {
+			return errors.New("证书提醒插件配置不可用")
+		}
+		var cfg trustnotify.Config
+		if provider.DecodeStrict(raw, &cfg) != nil {
+			return errors.New("证书提醒插件配置无效")
+		}
+		plugin, e := trustnotify.New(cfg)
+		if e != nil {
+			return e
+		}
+		defer plugin.Close()
+		reminderPlugin = plugin
+	}
 	var cert tls.Certificate
 	var publicCA []byte
 	if *tlsDirectory != "" {
@@ -330,10 +349,13 @@ func run() error {
 	} else {
 		slog.Info("开发登录控制台已启动，仅验证身份，不授予管理权限", "origin", origin, "config_file", filepath.Join(absolute, "connection.json"))
 	}
+	reminderDone := make(chan struct{})
+	go func() { defer close(reminderDone); service.RunTrustReminders(ctx, reminderPlugin) }()
 	err = server.Serve(tls.NewListener(listener, server.TLSConfig))
 	stop()
 	<-done
 	<-maintenanceDone
+	<-reminderDone
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}

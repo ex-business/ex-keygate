@@ -83,6 +83,17 @@ func TestApplicationTrustHTTPFlow(t *testing.T) {
 		t.Fatal("MFA前读取组织证书", status)
 	}
 	complete(0, "management")
+	for _, path := range []string{"/api/trust/status-signers", "/api/trust/reminders"} {
+		status, _ := nativeHTTP(t, a, actors[0].cookie, "GET", path, nil)
+		if status != 200 {
+			t.Fatal("运维目录读取失败", path, status)
+		}
+		status, _ = nativeHTTP(t, a, actors[0].cookie, "GET", path+"?limit=20", nil)
+		if status != 400 {
+			t.Fatal("目录接受任意查询", path, status)
+		}
+	}
+
 	status, rawCatalog := nativeHTTP(t, a, actors[0].cookie, "GET", "/api/trust/services", nil)
 	var catalog struct {
 		Roots []storage.ApplicationRoot `json:"roots"`

@@ -23,6 +23,18 @@ func TestOfflineToolsAndClientState(t *testing.T) {
 			t.Fatal(o.action, e)
 		}
 	}
+
+	for _, item := range []struct{ action, dir, kind, service string }{{"renewal-proposal", server, "trust_certificate_renew", "api-server"}, {"status-proposal", runtime, "trust_status_update", "trust-status"}} {
+		target := filepath.Join(base, item.action+".json")
+		if e := execute(options{action: item.action, directory: item.dir, rootFile: filepath.Join(root, "root.pem"), environment: "app-test", service: "api-server", version: 1, revision: 1, output: target}); e != nil {
+			t.Fatal(e)
+		}
+		raw, _ := os.ReadFile(target)
+		var v map[string]any
+		if json.Unmarshal(raw, &v) != nil || v["kind"] != item.kind || v["clientId"] != item.service || v["expectedRevision"] != "1" {
+			t.Fatal("续期或状态提案错误")
+		}
+	}
 	var proposal map[string]any
 	b, _ := os.ReadFile(filepath.Join(base, "proposal.json"))
 	if json.Unmarshal(b, &proposal) != nil || proposal["kind"] != "trust_certificate_publish" {

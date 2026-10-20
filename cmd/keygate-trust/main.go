@@ -37,7 +37,7 @@ func main() {
 }
 func run() error {
 	var o options
-	flag.StringVar(&o.action, "action", "", "root-init / recovery-init / key-init / status-init / issue / proposal / pin-init / challenge / sign / verify / recovery-sign / recovery-apply")
+	flag.StringVar(&o.action, "action", "", "root-init / recovery-init / key-init / status-init / issue / proposal / renewal-proposal / status-proposal / pin-init / challenge / sign / verify / recovery-sign / recovery-apply")
 	flag.StringVar(&o.directory, "directory", "", "当前角色私有目录")
 	flag.StringVar(&o.authority, "authority", "", "离线根或恢复密钥目录")
 	flag.StringVar(&o.environment, "environment", "", "固定应用环境")
@@ -197,25 +197,32 @@ func execute(o options) error {
 			}
 		}
 		return trustchain.WriteNew(filepath.Join(o.directory, name), trustchain.CertificatePEM(cert))
-	case "proposal":
+	case "proposal", "renewal-proposal", "status-proposal":
 		root, e := trustchain.ReadCertificate(o.rootFile)
 		if e != nil {
 			return e
 		}
-		certificate, e := trustchain.ReadCertificate(filepath.Join(o.directory, "certificate.pem"))
+		certName, keyName, purpose, service, version, kind := "certificate.pem", "service.key", trustchain.ServicePurpose, o.service, o.version, "trust_certificate_publish"
+		if o.action == "renewal-proposal" {
+			kind = "trust_certificate_renew"
+		}
+		if o.action == "status-proposal" {
+			certName, keyName, purpose, service, version, kind = "status.pem", "status.key", trustchain.StatusPurpose, "trust-status", 1, "trust_status_update"
+		}
+		certificate, e := trustchain.ReadCertificate(filepath.Join(o.directory, certName))
 		if e != nil {
 			return e
 		}
-		key, e := trustchain.ReadPrivateKey(filepath.Join(o.directory, "service.key"))
+		key, e := trustchain.ReadPrivateKey(filepath.Join(o.directory, keyName))
 		if e != nil {
 			return e
 		}
 		defer clear(key)
-		pub, e := trustchain.VerifyCertificate(root, certificate, o.environment, trustchain.ServicePurpose, o.service, o.version, now)
+		pub, e := trustchain.VerifyCertificate(root, certificate, o.environment, purpose, service, version, now)
 		if e != nil || !pub.Equal(key.Public()) {
 			return trustchain.ErrInvalid
 		}
-		return output(o.output, map[string]any{"kind": "trust_certificate_publish", "clientId": o.service, "expectedRevision": fmt.Sprint(o.revision), "keyVersion": fmt.Sprint(o.version), "name": "", "profileId": "", "profileVersion": "0", "trustRootFingerprint": trustchain.Fingerprint(root), "trustCertificate": certificate, "trustProof": trustchain.PossessionProof(certificate, key)})
+		return output(o.output, map[string]any{"kind": kind, "clientId": service, "expectedRevision": fmt.Sprint(o.revision), "keyVersion": fmt.Sprint(version), "name": "", "profileId": "", "profileVersion": "0", "trustRootFingerprint": trustchain.Fingerprint(root), "trustCertificate": certificate, "trustProof": trustchain.PossessionProof(certificate, key)})
 	case "pin-init":
 		root, e := trustchain.ReadCertificate(o.rootFile)
 		if e != nil {
