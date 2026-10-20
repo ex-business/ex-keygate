@@ -22,8 +22,9 @@ try:
                     "-e", "POSTGRES_PASSWORD", "-e", "POSTGRES_DB=keygate_test",
                     "-p", "127.0.0.1::5432", "postgres:16-alpine"],
                    env=env, check=True, stdout=subprocess.DEVNULL)
+    # 初始化临时服务仅监听Unix socket；等待TCP就绪，避免临时服务退出时误判可迁移。
     for attempt in range(60):
-        ready = subprocess.run(["docker", "exec", name, "pg_isready", "-U", "postgres", "-d", "keygate_test"],
+        ready = subprocess.run(["docker", "exec", name, "pg_isready", "-h", "127.0.0.1", "-U", "postgres", "-d", "keygate_test"],
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if ready.returncode == 0:
             break
