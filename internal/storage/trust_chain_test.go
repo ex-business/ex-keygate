@@ -191,6 +191,9 @@ func TestTrustStatusUsesAuthorityTimeAndCommit(t *testing.T) {
 	if _, e := f.db.Exec(`INSERT INTO keygate.application_trust_certificates(environment,service_id,version,fingerprint,certificate,state) VALUES($1,'api-service',1,$2,$3,'active')`, f.c.environment, trustchain.Fingerprint(cert), cert); e != nil {
 		t.Fatal(e)
 	}
+	if e := f.c.RegisterTrustStatusOffline(ctx, trustchain.Fingerprint(root), statusCert, unique(t)); e != nil {
+		t.Fatal(e)
+	}
 	nonce, _ := trustchain.NewNonce()
 	sign := func(r ApplicationRoot, s TrustService, at time.Time) (trustchain.Status, error) {
 		return trustchain.SignStatus(root, statusCert, statusKey, trustchain.Status{Environment: r.Environment, ServiceID: s.ServiceID, Revision: s.Revision, Version: s.Version, CertificateHash: s.CertificateHash, Disabled: s.Disabled, Nonce: nonce, Audience: "app"}, at)
@@ -263,6 +266,9 @@ func TestMultipleApplicationRootsIsolation(t *testing.T) {
 		}
 		pub, statusKey, _ := ed25519.GenerateKey(rand.Reader)
 		statusCert, _ := trustchain.Issue(roots[i], keys[i], pub, "app-test", trustchain.StatusPurpose, "trust-status", 1, now, now.Add(time.Hour))
+		if e := f.c.RegisterTrustStatusOffline(ctx, trustchain.Fingerprint(roots[i]), statusCert, unique(t)); e != nil {
+			t.Fatal(e)
+		}
 		nonce, _ := trustchain.NewNonce()
 		proof, e := f.c.IssueTrustStatus(ctx, id, unique(t), func(root ApplicationRoot, s TrustService, at time.Time) (trustchain.Status, error) {
 			return trustchain.SignStatus(root.Certificate, statusCert, statusKey, trustchain.Status{Environment: root.Environment, ServiceID: id, Revision: s.Revision, Version: s.Version, CertificateHash: s.CertificateHash, Nonce: nonce, Audience: "app"}, at)

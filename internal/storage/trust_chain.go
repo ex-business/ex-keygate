@@ -13,20 +13,25 @@ import (
 
 const PublishTrustCertificate = "trust_certificate_publish"
 const DisableTrustService = "trust_service_disable"
+const RenewTrustCertificate = "trust_certificate_renew"
+const UpdateTrustStatusCertificate = "trust_status_update"
 
 type ApplicationRoot struct {
-	Environment string `json:"applicationEnvironment"`
-	Fingerprint string `json:"fingerprint"`
-	Certificate []byte `json:"certificate"`
+	Info              *CertificateInfo `json:"info,omitempty"`
+	StatusFingerprint string           `json:"statusFingerprint,omitempty"`
+	Environment       string           `json:"applicationEnvironment"`
+	Fingerprint       string           `json:"fingerprint"`
+	Certificate       []byte           `json:"certificate"`
 }
 type TrustService struct {
-	RootFingerprint string `json:"rootFingerprint"`
-	ServiceID       string `json:"serviceId"`
-	Revision        uint64 `json:"revision"`
-	Version         uint64 `json:"version"`
-	Disabled        bool   `json:"disabled"`
-	Certificate     []byte `json:"certificate"`
-	CertificateHash string `json:"certificateHash"`
+	Info            *CertificateInfo `json:"info,omitempty"`
+	RootFingerprint string           `json:"rootFingerprint"`
+	ServiceID       string           `json:"serviceId"`
+	Revision        uint64           `json:"revision"`
+	Version         uint64           `json:"version"`
+	Disabled        bool             `json:"disabled"`
+	Certificate     []byte           `json:"certificate"`
+	CertificateHash string           `json:"certificateHash"`
 }
 
 // RegisterApplicationRootOffline 只在可信启动阶段登记公有信任根；启用原生MFA后才允许接通业务签名模式。
@@ -95,6 +100,9 @@ func (c *DevelopmentControl) validateTrustOperation(ctx context.Context, tx *sql
 	if root.Fingerprint != op.TrustRootFingerprint || op.ExpectedRevision > 9007199254740991 || op.KeyVersion == 0 || op.KeyVersion > 9007199254740991 {
 		return ErrInvalid
 	}
+	if op.Kind == UpdateTrustStatusCertificate {
+		return c.validateStatusUpdate(ctx, tx, root, op)
+	}
 	var revision, version uint64
 	var disabled bool
 	var boundRoot string
@@ -115,6 +123,9 @@ func (c *DevelopmentControl) validateTrustOperation(ctx context.Context, tx *sql
 		}
 		return nil
 	}
+	if op.Kind == RenewTrustCertificate && (revision == 0 || disabled) {
+		return ErrConflict
+	}
 	if op.KeyVersion != version+1 {
 		return ErrConflict
 	}
@@ -126,9 +137,24 @@ func (c *DevelopmentControl) validateTrustOperation(ctx context.Context, tx *sql
 	if e != nil || !trustchain.VerifyPossession(pub, op.TrustCertificate, op.TrustProof) {
 		return ErrInvalid
 	}
+	if op.Kind == RenewTrustCertificate {
+		old, err := c.trustService(ctx, tx, op.ClientID)
+		if err != nil {
+			return err
+		}
+		previous, err := certificateInfo(old.Certificate, now)
+		next, nextErr := certificateInfo(op.TrustCertificate, now)
+		// 续期只延长正常服务的有效期；泄漏、撤销及停用恢复必须走明确的新版本发布。
+		if err != nil || nextErr != nil || !next.NotAfter.After(previous.NotAfter) {
+			return ErrInvalid
+		}
+	}
 	return nil
 }
 func (c *DevelopmentControl) applyTrustOperation(ctx context.Context, tx *sql.Tx, op ControlOperation, approvalID, actorID string) error {
+	if op.Kind == UpdateTrustStatusCertificate {
+		return c.applyStatusUpdate(ctx, tx, op, approvalID, actorID)
+	}
 	if op.Kind == DisableTrustService {
 		if _, e := tx.ExecContext(ctx, `UPDATE keygate.application_trust_services SET disabled=true,revision=revision+1 WHERE environment=$1 AND service_id=$2`, c.environment, op.ClientID); e != nil {
 			return e
@@ -152,7 +178,11 @@ func (c *DevelopmentControl) applyTrustOperation(ctx context.Context, tx *sql.Tx
 	if _, e := tx.ExecContext(ctx, `INSERT INTO keygate.application_trust_certificates(environment,service_id,version,fingerprint,certificate,state) VALUES($1,$2,$3,$4,$5,'active')`, c.environment, op.ClientID, op.KeyVersion, trustchain.Fingerprint(op.TrustCertificate), op.TrustCertificate); e != nil {
 		return e
 	}
-	return c.trustChange(ctx, tx, op.ClientID, op.KeyVersion, "published", "approved_publish", approvalID, actorID)
+	reason := "approved_publish"
+	if op.Kind == RenewTrustCertificate {
+		reason = "approved_renewal"
+	}
+	return c.trustChange(ctx, tx, op.ClientID, op.KeyVersion, "published", reason, approvalID, actorID)
 }
 func (c *DevelopmentControl) trustService(ctx context.Context, tx *sql.Tx, id string) (TrustService, error) {
 	out := TrustService{ServiceID: id}
@@ -215,6 +245,10 @@ func (c *DevelopmentControl) TrustServices(ctx context.Context, token string) ([
 	if e != nil {
 		return nil, nil, e
 	}
+	now, e := controlNow(ctx, tx)
+	if e != nil {
+		return nil, nil, e
+	}
 	out := []TrustService{}
 	for _, id := range ids {
 		if !c.has(ctx, tx, a.id, access.Viewer, id) {
@@ -224,6 +258,11 @@ func (c *DevelopmentControl) TrustServices(ctx context.Context, token string) ([
 		if e != nil {
 			return nil, nil, e
 		}
+		info, err := certificateInfo(service.Certificate, now)
+		if err != nil {
+			return nil, nil, err
+		}
+		service.Info = &info
 		out = append(out, service)
 	}
 	if !c.has(ctx, tx, a.id, access.Viewer, "") && len(out) == 0 {
@@ -259,6 +298,11 @@ func (c *DevelopmentControl) TrustServices(ctx context.Context, token string) ([
 			}
 		}
 		if visible {
+			info, err := certificateInfo(root.Certificate, now)
+			if err != nil {
+				return nil, nil, err
+			}
+			root.Info = &info
 			roots = append(roots, root)
 		}
 	}
@@ -334,6 +378,9 @@ func (c *DevelopmentControl) IssueTrustStatus(ctx context.Context, id, trace str
 	if e != nil {
 		return trustchain.Status{}, e
 	}
+	if e = tx.QueryRowContext(ctx, `SELECT fingerprint FROM keygate.application_trust_status_signers WHERE environment=$1 AND root_fingerprint=$2`, c.environment, root.Fingerprint).Scan(&root.StatusFingerprint); e != nil {
+		return trustchain.Status{}, e
+	}
 	now, e := controlNow(ctx, tx)
 	if e != nil {
 		return trustchain.Status{}, e
@@ -344,6 +391,12 @@ func (c *DevelopmentControl) IssueTrustStatus(ctx context.Context, id, trace str
 	}
 	if out.IssuedAt != now.Unix() || out.ExpiresAt > now.Unix()+30 || out.ExpiresAt <= now.Unix() || out.ServiceID != id || out.Environment != root.Environment || out.Revision != service.Revision || out.Version != service.Version || out.Disabled != service.Disabled || out.CertificateHash != service.CertificateHash {
 		return trustchain.Status{}, ErrInvalid
+	}
+	// 已登记状态签名器后，只接受数据库当前批准的证书；旧节点不能绕过切换继续签发。
+	var approved string
+	err := tx.QueryRowContext(ctx, `SELECT fingerprint FROM keygate.application_trust_status_signers WHERE environment=$1 AND root_fingerprint=$2`, c.environment, root.Fingerprint).Scan(&approved)
+	if err != nil || approved != trustchain.Fingerprint(out.StatusCertificate) {
+		return trustchain.Status{}, ErrConflict
 	}
 	if e = c.audit(ctx, tx, trace, "public-verifier", "application_trust_status", id, "issued"); e != nil {
 		return trustchain.Status{}, e

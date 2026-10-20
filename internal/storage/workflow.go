@@ -86,6 +86,11 @@ type ControlRequest struct {
 
 func digestBytes(raw []byte) string { h := sha256.Sum256(raw); return hex.EncodeToString(h[:]) }
 func (c *DevelopmentControl) grantRevision(ctx context.Context, tx *sql.Tx, id string, role access.Role, client string) (int64, string, error) {
+	// 状态签名器影响根下所有服务，申请和审批必须持有全域角色。
+	if client == "trust-status" {
+		client = ""
+	}
+
 	var rev int64
 	var scope string
 	// 优先采用客户端精确授权；任何被快照引用的授权修订变化都会使旧审批失效。
@@ -111,7 +116,7 @@ func (c *DevelopmentControl) validateOperation(ctx context.Context, tx *sql.Tx, 
 	if !access.ValidID(op.ClientID) || op.ExpectedRevision > 9007199254740991 {
 		return ErrInvalid
 	}
-	if op.Kind == PublishTrustCertificate || op.Kind == DisableTrustService {
+	if op.Kind == PublishTrustCertificate || op.Kind == RenewTrustCertificate || op.Kind == UpdateTrustStatusCertificate || op.Kind == DisableTrustService {
 		return c.validateTrustOperation(ctx, tx, op)
 	}
 	if len(op.TrustCertificate) != 0 || len(op.TrustProof) != 0 || op.TrustRootFingerprint != "" {
@@ -638,7 +643,7 @@ func (c *DevelopmentControl) executePreparedAs(ctx context.Context, id, digest, 
 		if n != 1 {
 			return ErrConflict
 		}
-	} else if op.Kind == PublishTrustCertificate || op.Kind == DisableTrustService {
+	} else if op.Kind == PublishTrustCertificate || op.Kind == RenewTrustCertificate || op.Kind == UpdateTrustStatusCertificate || op.Kind == DisableTrustService {
 		if e = c.applyTrustOperation(ctx, tx, op, id, m.Applicant.PrincipalID); e != nil {
 			return e
 		}
