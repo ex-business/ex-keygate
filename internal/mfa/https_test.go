@@ -140,3 +140,33 @@ func TestClientCertificateChangesPluginTrustDigest(t *testing.T) {
 		t.Fatal("更换客户端身份未改变信任配置摘要")
 	}
 }
+
+func TestHardwareRegistrationRequiresBoundTrustedCredential(t *testing.T) {
+	for _, verified := range []bool{true, false} {
+		plugin := tlsPlugin(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			raw, _ := io.ReadAll(r.Body)
+			w.Header().Set("Content-Type", "application/json")
+			var result any
+			switch r.URL.Path {
+			case "/hardware/register/begin":
+				result = map[string]any{"id": "enrollment", "options": map[string]any{"publicKey": map[string]string{"challenge": "nonce"}}}
+			case "/hardware/register/verify":
+				result = map[string]any{"id": "enrollment", "verified": verified, "credential": "trusted-credential"}
+			default:
+				t.Error("注册调用了旧登录协议")
+			}
+			json.NewEncoder(w).Encode(map[string]any{"requestDigest": provider.Hash(raw), "result": result})
+		}))
+		challenge := HardwareChallenge{ID: "enrollment", Nonce: "nonce", Principal: "person", Origin: "https://console.example", ExpiresAt: time.Now().Add(time.Minute)}
+		if _, e := plugin.RegisterBegin(context.Background(), challenge); e != nil {
+			t.Fatal(e)
+		}
+		credential, e := plugin.RegisterVerify(context.Background(), challenge, json.RawMessage(`{"attestation":"proof"}`))
+		if verified && (e != nil || credential != "trusted-credential") {
+			t.Fatal("可信注册失败", e)
+		}
+		if !verified && (e == nil || credential != "") {
+			t.Fatal("未验证注册被接受")
+		}
+	}
+}

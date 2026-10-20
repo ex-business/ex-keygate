@@ -152,3 +152,29 @@ func (p *HTTPSPlugin) Verify(ctx context.Context, c HardwareChallenge, proof jso
 }
 
 func (p *HTTPSPlugin) Close() { p.client.CloseIdleConnections() }
+
+func (p *HTTPSPlugin) RegisterBegin(ctx context.Context, c HardwareChallenge) (json.RawMessage, error) {
+	var out struct {
+		ID      string          `json:"id"`
+		Options json.RawMessage `json:"options"`
+	}
+	if e := p.call(ctx, "/hardware/register/begin", c.ID, c, &out); e != nil || out.ID != c.ID || len(out.Options) == 0 || bytes.Equal(out.Options, []byte("null")) {
+		return nil, ErrPlugin
+	}
+	return out.Options, nil
+}
+func (p *HTTPSPlugin) RegisterVerify(ctx context.Context, c HardwareChallenge, proof json.RawMessage) (string, error) {
+	var out struct {
+		ID         string `json:"id"`
+		Credential string `json:"credential"`
+		Verified   bool   `json:"verified"`
+	}
+	input := struct {
+		Challenge HardwareChallenge `json:"challenge"`
+		Proof     json.RawMessage   `json:"proof"`
+	}{c, proof}
+	if e := p.call(ctx, "/hardware/register/verify", c.ID, input, &out); e != nil || out.ID != c.ID || !out.Verified || len(out.Credential) == 0 || len(out.Credential) > 2048 {
+		return "", ErrPlugin
+	}
+	return out.Credential, nil
+}

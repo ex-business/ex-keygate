@@ -51,3 +51,10 @@ func (p Plugins) Available(method Method) bool {
 	}
 	return false
 }
+
+// HardwareRegistrationPlugin 独立核验注册attestation、RP/Origin/挑战及用户验证，返回可信凭据标识。
+// 只实现登录断言的旧插件不自动具备注册能力。
+type HardwareRegistrationPlugin interface {
+	RegisterBegin(context.Context, HardwareChallenge) (json.RawMessage, error)
+	RegisterVerify(context.Context, HardwareChallenge, json.RawMessage) (string, error)
+}

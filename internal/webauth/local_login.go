@@ -67,7 +67,7 @@ func (s *Service) localLoginRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /auth/options", func(w http.ResponseWriter, r *http.Request) {
 		token := random()
 		setCookie(w, passwordCSRFCookie, token, 600, http.SameSiteStrictMode)
-		businessJSON(w, 200, map[string]any{"password": s.localAccounts, "sso": true, "simulatedSSO": s.config.Identity.DevelopmentMode, "csrfToken": csrf(token)})
+		businessJSON(w, 200, map[string]any{"password": s.passwordEnabled(r), "sso": true, "simulatedSSO": s.config.Identity.DevelopmentMode, "csrfToken": csrf(token)})
 	})
 	mux.HandleFunc("POST /auth/password", s.passwordLogin)
 }
@@ -78,7 +78,7 @@ func (s *Service) passwordLogin(w http.ResponseWriter, r *http.Request) {
 		fail(w, 403)
 		return
 	}
-	if !s.localAccounts || s.flow == nil {
+	if !s.passwordEnabled(r) || s.flow == nil {
 		fail(w, 503)
 		return
 	}
@@ -118,4 +118,8 @@ func (s *Service) passwordLogin(w http.ResponseWriter, r *http.Request) {
 	setCookie(w, passwordCSRFCookie, "", -1, http.SameSiteStrictMode)
 	s.completed(r.Context(), requestID(r), session.PrincipalID, "local-login", "password_verified")
 	businessJSON(w, 200, map[string]string{"next": "mfa"})
+}
+
+func (s *Service) passwordEnabled(r *http.Request) bool {
+	return s.localAccounts || (s.flow != nil && s.flow.control.PasswordLoginAvailable(r.Context()))
 }

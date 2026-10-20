@@ -50,6 +50,7 @@ func (s *Service) ConfigureApplicationTrust(ctx context.Context, environment str
 }
 func (s *Service) trustRoutes(handle func(string, http.HandlerFunc)) {
 	s.trustRenewalRoutes(handle)
+	s.accountRoutes(handle)
 	handle("GET /api/trust/services", func(w http.ResponseWriter, r *http.Request) {
 		token, ok := s.businessSession(w, r, false)
 		if !ok {
