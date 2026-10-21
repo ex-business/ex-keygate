@@ -24,6 +24,7 @@ type checkpointTable struct{ name, where string }
 
 var checkpointTables = []checkpointTable{
 	{"approval_notifications", "environment=$1"},
+	{"approval_delivery_records", "environment=$1"}, {"approval_notification_alerts", "environment=$1"},
 	{"persistent_deployments", "environment=$1"},
 	{"account_setups", "environment=$1"}, {"account_setup_factors", "environment=$1"},
 	{"principal_session_blocks", "environment=$1"},
@@ -60,7 +61,7 @@ func captureSafety(ctx context.Context, tx *sql.Tx, environment string) (SafetyC
 	}
 	for _, table := range checkpointTables {
 		// schema21签名检查点用于原子升级，唯独22新增的通知表尚不存在；其他缺失仍失败。
-		if schemaVersion == 21 && table.name == "approval_notifications" {
+		if (schemaVersion == 21 && table.name == "approval_notifications") || (schemaVersion < 23 && (table.name == "approval_delivery_records" || table.name == "approval_notification_alerts")) {
 			continue
 		}
 		rows, e := tx.QueryContext(ctx, `SELECT to_jsonb(x)::text FROM (SELECT * FROM keygate.`+table.name+` WHERE `+table.where+`) x ORDER BY to_jsonb(x)::text COLLATE "C"`, environment)
@@ -158,7 +159,7 @@ func (s *Store) QuarantineRestored(ctx context.Context, expected SafetyCheckpoin
 	}
 	for _, table := range checkpointTables {
 		// schema21签名检查点用于原子升级，唯独22新增的通知表尚不存在；其他缺失仍失败。
-		if schemaVersion == 21 && table.name == "approval_notifications" {
+		if (schemaVersion == 21 && table.name == "approval_notifications") || (schemaVersion < 23 && (table.name == "approval_delivery_records" || table.name == "approval_notification_alerts")) {
 			continue
 		}
 		if _, e = tx.ExecContext(ctx, `LOCK TABLE keygate.`+table.name+` IN EXCLUSIVE MODE NOWAIT`); e != nil {

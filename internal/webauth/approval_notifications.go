@@ -5,10 +5,78 @@ import (
 	"errors"
 	"ex-keygate/internal/storage"
 	"net/http"
+	"strconv"
 	"time"
 )
 
-func (s *Service) approvalNotificationRoutes(handle func(string, http.HandlerFunc)) {
+func (s *Service) approvalNotificationRoutes(handle func(string, http.HandlerFunc), mux *http.ServeMux) {
+	// 仅此只读列表支持白名单查询，既有业务wrapper仍拒绝查询；沿用同一限流器与会话鉴权。
+	mux.HandleFunc("GET /api/notification-operations", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.ForceQuery || len(r.URL.RawQuery) > 256 || !trustQuery(r, "state", "offset") {
+			fail(w, 400)
+			return
+		}
+		if !s.flow.limiter.allow() {
+			w.Header().Set("Retry-After", "1")
+			fail(w, 429)
+			return
+		}
+		token, ok := s.businessSession(w, r, false)
+		if !ok {
+			return
+		}
+		offset := 0
+		var e error
+		if raw := r.URL.Query().Get("offset"); raw != "" {
+			offset, e = strconv.Atoi(raw)
+			if e != nil {
+				s.businessError(w, r, storage.ErrInvalid)
+				return
+			}
+		}
+		out, e := s.flow.control.NotificationOperations(r.Context(), token, r.URL.Query().Get("state"), offset)
+		if e != nil {
+			s.businessError(w, r, e)
+			return
+		}
+		businessJSON(w, 200, out)
+	})
+	handle("GET /api/notification-operations/{id}/records", func(w http.ResponseWriter, r *http.Request) {
+		token, ok := s.businessSession(w, r, false)
+		if !ok {
+			return
+		}
+		out, e := s.flow.control.NotificationDeliveryRecords(r.Context(), token, r.PathValue("id"))
+		if e != nil {
+			s.businessError(w, r, e)
+			return
+		}
+		businessJSON(w, 200, out)
+	})
+	handle("POST /api/notification-operations/{id}/resend", func(w http.ResponseWriter, r *http.Request) {
+		token, ok := s.businessSession(w, r, true)
+		if !ok {
+			return
+		}
+		var body struct {
+			Digest        string `json:"digest"`
+			Reason        string `json:"reason"`
+			ExpectedRound *int   `json:"expectedRound"`
+		}
+		if e := strictJSON(w, r, &body); e != nil {
+			s.businessError(w, r, e)
+			return
+		}
+		if body.ExpectedRound == nil {
+			s.businessError(w, r, storage.ErrInvalid)
+			return
+		}
+		if e := s.flow.control.ResendApprovalNotification(r.Context(), token, r.PathValue("id"), body.Digest, body.Reason, requestID(r), *body.ExpectedRound); e != nil {
+			s.businessError(w, r, e)
+			return
+		}
+		w.WriteHeader(204)
+	})
 	handle("GET /api/notifications", func(w http.ResponseWriter, r *http.Request) {
 		token, ok := s.businessSession(w, r, false)
 		if !ok {

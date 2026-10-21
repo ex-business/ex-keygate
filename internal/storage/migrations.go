@@ -75,6 +75,9 @@ var persistentRuntimeSchema string
 //go:embed approval_notifications_schema.sql
 var approvalNotificationsSchema string
 
+//go:embed notification_operations_schema.sql
+var notificationOperationsSchema string
+
 func controlMigrations() []struct {
 	version int
 	body    string
@@ -82,7 +85,7 @@ func controlMigrations() []struct {
 	return []struct {
 		version int
 		body    string
-	}{{1, controlSchema}, {2, workflowSchema}, {3, keysSchema}, {4, lifecycleSchema}, {5, revocationSchema}, {6, recoverySchema}, {7, auditSchema}, {8, auditRefinementsSchema}, {9, providersSchema}, {10, clusterSchema}, {11, browserSchema}, {12, loginFreshnessSchema}, {13, nativeMFASchema}, {14, localAccountsSchema}, {15, trustChainSchema}, {16, multipleTrustRootsSchema}, {17, trustHistorySchema}, {18, trustRenewalSchema}, {19, governanceSchema}, {20, accountMaintenanceSchema}, {21, persistentRuntimeSchema}, {22, approvalNotificationsSchema}}
+	}{{1, controlSchema}, {2, workflowSchema}, {3, keysSchema}, {4, lifecycleSchema}, {5, revocationSchema}, {6, recoverySchema}, {7, auditSchema}, {8, auditRefinementsSchema}, {9, providersSchema}, {10, clusterSchema}, {11, browserSchema}, {12, loginFreshnessSchema}, {13, nativeMFASchema}, {14, localAccountsSchema}, {15, trustChainSchema}, {16, multipleTrustRootsSchema}, {17, trustHistorySchema}, {18, trustRenewalSchema}, {19, governanceSchema}, {20, accountMaintenanceSchema}, {21, persistentRuntimeSchema}, {22, approvalNotificationsSchema}, {23, notificationOperationsSchema}}
 }
 
 // migrateControl 使用编号和校验和拒绝已应用迁移被静默修改；不自动降级。

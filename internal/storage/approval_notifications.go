@@ -21,6 +21,7 @@ type ApprovalNotification struct {
 	Read        bool      `json:"read"`
 	State       string    `json:"state"`
 	Attempts    int       `json:"attempts"`
+	Resends     int       `json:"resends"`
 }
 type ApprovalNotificationPlugin interface {
 	SendApprovalNotification(context.Context, ApprovalNotification) error
@@ -226,6 +227,9 @@ func (c *DevelopmentControl) CollectApprovalNotifications(ctx context.Context) e
 		return e
 	}
 	defer tx.Rollback()
+	if e = c.expireDeliveryRecords(ctx, tx); e != nil {
+		return e
+	}
 	if _, e = tx.ExecContext(ctx, `UPDATE keygate.approval_notifications SET state='failed',lease_until=NULL WHERE environment=$1 AND state='sending' AND attempts>=5 AND lease_until<=clock_timestamp()`, c.environment); e != nil {
 		return e
 	}
@@ -252,14 +256,28 @@ func (c *DevelopmentControl) CollectApprovalNotifications(ctx context.Context) e
 			return e
 		}
 	}
-	return tx.Commit()
+	alerts, e := c.updateNotificationAlerts(ctx, tx)
+	if e != nil {
+		return e
+	}
+	if e = tx.Commit(); e != nil {
+		return e
+	}
+	for _, a := range alerts {
+		if a.Active {
+			c.logger.WarnContext(ctx, "审批通知运维告警触发", "environment", c.environment, "alert_code", a.Code, "count", a.Count, "oldest_seconds", a.OldestSeconds, "result", "active")
+		} else {
+			c.logger.InfoContext(ctx, "审批通知运维告警恢复", "environment", c.environment, "alert_code", a.Code, "result", "cleared")
+		}
+	}
+	return nil
 }
 
-const noticeColumns = `id,request_id,recipient_id,kind,request_digest,expires_at,created_at,read_at IS NOT NULL,state,attempts`
+const noticeColumns = `id,request_id,recipient_id,kind,request_digest,expires_at,created_at,read_at IS NOT NULL,state,attempts,resend_count`
 
 func scanApprovalNotice(row reminderScanner) (ApprovalNotification, error) {
 	var v ApprovalNotification
-	e := row.Scan(&v.ID, &v.RequestID, &v.RecipientID, &v.Kind, &v.Digest, &v.ExpiresAt, &v.CreatedAt, &v.Read, &v.State, &v.Attempts)
+	e := row.Scan(&v.ID, &v.RequestID, &v.RecipientID, &v.Kind, &v.Digest, &v.ExpiresAt, &v.CreatedAt, &v.Read, &v.State, &v.Attempts, &v.Resends)
 	return v, e
 }
 func (c *DevelopmentControl) ApprovalNotifications(ctx context.Context, token string) ([]ApprovalNotification, error) {
@@ -375,6 +393,9 @@ func (c *DevelopmentControl) DispatchApprovalNotification(ctx context.Context, p
 		return false, e
 	}
 	defer tx.Rollback()
+	if e = c.expireDeliveryRecords(ctx, tx); e != nil {
+		return false, e
+	}
 	v, e := scanApprovalNotice(tx.QueryRowContext(ctx, `UPDATE keygate.approval_notifications SET state='sending',attempts=attempts+1,lease_until=clock_timestamp()+interval '30 seconds' WHERE environment=$1 AND id=(SELECT id FROM keygate.approval_notifications WHERE environment=$1 AND attempts<5 AND next_attempt<=clock_timestamp() AND (state='pending' OR (state='sending' AND lease_until<clock_timestamp())) ORDER BY created_at,id LIMIT 1 FOR UPDATE SKIP LOCKED) RETURNING `+noticeColumns, c.environment))
 	if errors.Is(e, sql.ErrNoRows) {
 		return false, tx.Commit()
@@ -391,6 +412,9 @@ func (c *DevelopmentControl) DispatchApprovalNotification(ctx context.Context, p
 			return false, e
 		}
 		return true, tx.Commit()
+	}
+	if _, e = tx.ExecContext(ctx, `INSERT INTO keygate.approval_delivery_records(environment,notification_id,round,attempt,outcome) VALUES($1,$2,$3,$4,'sending')`, c.environment, v.ID, v.Resends, v.Attempts); e != nil {
+		return false, e
 	}
 	if e = tx.Commit(); e != nil {
 		return false, e
@@ -410,12 +434,22 @@ func (c *DevelopmentControl) DispatchApprovalNotification(ctx context.Context, p
 			state = "failed"
 		}
 	}
-	result, e := tx.ExecContext(ctx, `UPDATE keygate.approval_notifications SET state=$4,lease_until=NULL,next_attempt=clock_timestamp()+($3*interval '30 seconds') WHERE environment=$1 AND id=$2 AND attempts=$3 AND state='sending'`, c.environment, v.ID, v.Attempts, state)
+	result, e := tx.ExecContext(ctx, `UPDATE keygate.approval_notifications SET state=$4,lease_until=NULL,next_attempt=clock_timestamp()+($3*interval '30 seconds') WHERE environment=$1 AND id=$2 AND attempts=$3 AND state='sending' AND resend_count=$5`, c.environment, v.ID, v.Attempts, state, v.Resends)
 	if e != nil {
 		return true, e
 	}
 	n, e := result.RowsAffected()
 	if e != nil {
+		return true, e
+	}
+	outcome := "obsolete"
+	if n == 1 {
+		outcome = "sent"
+		if sendErr != nil {
+			outcome = "unconfirmed"
+		}
+	}
+	if _, e = tx.ExecContext(ctx, `UPDATE keygate.approval_delivery_records SET outcome=$5,finished_at=clock_timestamp() WHERE environment=$1 AND notification_id=$2 AND round=$3 AND attempt=$4 AND outcome='sending'`, c.environment, v.ID, v.Resends, v.Attempts, outcome); e != nil {
 		return true, e
 	}
 	if n == 1 {
