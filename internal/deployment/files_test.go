@@ -214,3 +214,44 @@ func TestSnapshotCannotHideOfflineRootKeyInSourceDirectory(t *testing.T) {
 		t.Fatal("快照掩盖了原目录中的离线根私钥")
 	}
 }
+
+func TestAlertDeliveryConfigAndNestedCertificatesArePinned(t *testing.T) {
+	parent := t.TempDir()
+	key := filepath.Join(parent, "wrapping.key")
+	os.WriteFile(key, make([]byte, 32), 0600)
+	f, e := Open(filepath.Join(parent, "runtime"), key, true)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer f.Close()
+	tls := filepath.Join(parent, "tls")
+	os.Mkdir(tls, 0700)
+	for _, name := range []string{"cert.pem", "key.pem", "ca.pem"} {
+		os.WriteFile(filepath.Join(tls, name), []byte("pinned-material"), 0600)
+	}
+	file := filepath.Join(parent, "alert.json")
+	raw := []byte(`{"routes":[{"id":"oncall","plugin":{"caFile":"` + filepath.Join(tls, "ca.pem") + `","keyFile":"` + filepath.Join(tls, "key.pem") + `","certificateFile":"` + filepath.Join(tls, "cert.pem") + `"}}]}`)
+	os.WriteFile(file, raw, 0600)
+	settings := Settings{TLSDirectory: tls, AlertNotifyFile: file}
+	deps, e := Dependencies(settings)
+	if e != nil {
+		t.Fatal(e)
+	}
+	r := Revision{Number: 1, Settings: settings, Dependencies: deps}
+	snapshot, cleanup, e := f.Snapshot(r)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer cleanup()
+	if snapshot.AlertNotifyFile == file {
+		t.Fatal("未装配告警配置快照")
+	}
+	pinned, e := os.ReadFile(snapshot.AlertNotifyFile)
+	if e != nil || bytes.Contains(pinned, []byte(tls)) {
+		t.Fatal("告警证书路径未绑定快照", e)
+	}
+	os.WriteFile(filepath.Join(tls, "key.pem"), []byte("tampered"), 0600)
+	if _, _, e = f.Snapshot(r); e == nil {
+		t.Fatal("告警插件证书依赖被静默修改")
+	}
+}

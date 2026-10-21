@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"ex-keygate/internal/access"
+	"strings"
 	"time"
 )
 
@@ -23,6 +24,7 @@ type TableCheckpoint struct {
 type checkpointTable struct{ name, where string }
 
 var checkpointTables = []checkpointTable{
+	{"alert_routes", "environment=$1"}, {"alert_delivery_cursor", "environment=$1"}, {"alert_incidents", "environment=$1"}, {"alert_silences", "environment=$1"}, {"alert_deliveries", "environment=$1"}, {"alert_delivery_records", "environment=$1"},
 	{"approval_notifications", "environment=$1"},
 	{"system_monitor_samples", "environment=$1"}, {"system_monitor_alerts", "environment=$1"}, {"system_monitor_events", "environment=$1"},
 	{"approval_delivery_records", "environment=$1"}, {"approval_notification_alerts", "environment=$1"},
@@ -62,7 +64,7 @@ func captureSafety(ctx context.Context, tx *sql.Tx, environment string) (SafetyC
 	}
 	for _, table := range checkpointTables {
 		// 旧版本检查点用于原子升级，仅跳过其版本之后才新增的表；已存在表缺失仍失败。
-		if (schemaVersion < 24 && (table.name == "system_monitor_samples" || table.name == "system_monitor_alerts" || table.name == "system_monitor_events")) || (schemaVersion == 21 && table.name == "approval_notifications") || (schemaVersion < 23 && (table.name == "approval_delivery_records" || table.name == "approval_notification_alerts")) {
+		if (schemaVersion < 25 && strings.HasPrefix(table.name, "alert_")) || (schemaVersion < 24 && (table.name == "system_monitor_samples" || table.name == "system_monitor_alerts" || table.name == "system_monitor_events")) || (schemaVersion == 21 && table.name == "approval_notifications") || (schemaVersion < 23 && (table.name == "approval_delivery_records" || table.name == "approval_notification_alerts")) {
 			continue
 		}
 		rows, e := tx.QueryContext(ctx, `SELECT to_jsonb(x)::text FROM (SELECT * FROM keygate.`+table.name+` WHERE `+table.where+`) x ORDER BY to_jsonb(x)::text COLLATE "C"`, environment)
@@ -160,7 +162,7 @@ func (s *Store) QuarantineRestored(ctx context.Context, expected SafetyCheckpoin
 	}
 	for _, table := range checkpointTables {
 		// 旧版本检查点用于原子升级，仅跳过其版本之后才新增的表；已存在表缺失仍失败。
-		if (schemaVersion < 24 && (table.name == "system_monitor_samples" || table.name == "system_monitor_alerts" || table.name == "system_monitor_events")) || (schemaVersion == 21 && table.name == "approval_notifications") || (schemaVersion < 23 && (table.name == "approval_delivery_records" || table.name == "approval_notification_alerts")) {
+		if (schemaVersion < 25 && strings.HasPrefix(table.name, "alert_")) || (schemaVersion < 24 && (table.name == "system_monitor_samples" || table.name == "system_monitor_alerts" || table.name == "system_monitor_events")) || (schemaVersion == 21 && table.name == "approval_notifications") || (schemaVersion < 23 && (table.name == "approval_delivery_records" || table.name == "approval_notification_alerts")) {
 			continue
 		}
 		if _, e = tx.ExecContext(ctx, `LOCK TABLE keygate.`+table.name+` IN EXCLUSIVE MODE NOWAIT`); e != nil {
@@ -179,6 +181,30 @@ func (s *Store) QuarantineRestored(ctx context.Context, expected SafetyCheckpoin
 		return e
 	}
 	environment := expected.Environment
+
+	// 隔离恢复不能重放备份中的旧事故、静默或未知投递；保留历史记录，仅使旧工作失效并越过历史消费水位。
+	if schemaVersion >= 25 {
+		for _, statement := range []string{
+			`UPDATE keygate.alert_deliveries SET state='obsolete',lease_until=NULL WHERE environment=$1 AND state IN ('pending','sending','failed')`,
+			`UPDATE keygate.alert_delivery_records SET outcome='obsolete',finished_at=clock_timestamp() WHERE environment=$1 AND outcome='sending'`,
+			`UPDATE keygate.alert_incidents SET active=false WHERE environment=$1 AND active`,
+			`DELETE FROM keygate.alert_silences WHERE environment=$1`,
+			`UPDATE keygate.alert_routes SET starts_at=clock_timestamp() WHERE environment=$1`,
+			`INSERT INTO keygate.alert_delivery_cursor(environment,sequence) SELECT $1,COALESCE(max(sequence),0) FROM keygate.system_monitor_events WHERE environment=$1 ON CONFLICT(environment) DO UPDATE SET sequence=EXCLUDED.sequence`,
+		} {
+			if _, e = tx.ExecContext(ctx, statement, environment); e != nil {
+				return e
+			}
+		}
+	}
+	if schemaVersion >= 24 {
+		if _, e = tx.ExecContext(ctx, `DELETE FROM keygate.system_monitor_samples WHERE environment=$1`, environment); e != nil {
+			return e
+		}
+		if _, e = tx.ExecContext(ctx, `UPDATE keygate.system_monitor_alerts SET active=false,count=0,changed_at=clock_timestamp() WHERE environment=$1`, environment); e != nil {
+			return e
+		}
+	}
 	if schemaVersion >= 22 {
 		if _, e = tx.ExecContext(ctx, `UPDATE keygate.approval_notifications SET state='obsolete',lease_until=NULL WHERE environment=$1 AND state IN ('pending','sending')`, environment); e != nil {
 			return e

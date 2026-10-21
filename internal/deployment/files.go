@@ -26,6 +26,7 @@ var labelName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,255}$`)
 var name = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$`)
 
 type Settings struct {
+	AlertNotifyFile    string `json:"alertNotifyFile,omitempty"`
 	ApprovalNotifyFile string `json:"approvalNotifyFile,omitempty"`
 	Port               int    `json:"port"`
 	DatabaseFile       string `json:"databaseFile"`
@@ -314,7 +315,7 @@ func Dependencies(s Settings) (map[string]string, error) {
 		}
 		return nil
 	}
-	for _, p := range []string{s.DatabaseFile, s.SSOFile, s.SSOSecretFile, s.PluginFile, s.MFAPluginsFile, s.ReminderFile, s.ApprovalNotifyFile} {
+	for _, p := range []string{s.DatabaseFile, s.SSOFile, s.SSOSecretFile, s.PluginFile, s.MFAPluginsFile, s.ReminderFile, s.ApprovalNotifyFile, s.AlertNotifyFile} {
 		if e := add(p); e != nil {
 			return nil, e
 		}

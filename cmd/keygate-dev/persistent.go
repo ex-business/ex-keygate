@@ -41,7 +41,7 @@ func randomRuntimeID(prefix string) string {
 	return prefix + hex.EncodeToString(b)
 }
 func absoluteSetting(s deployment.Settings) (deployment.Settings, error) {
-	values := []*string{&s.DatabaseFile, &s.SSOFile, &s.SSOSecretFile, &s.TLSDirectory, &s.PluginFile, &s.MFAPluginsFile, &s.ReminderFile, &s.Output, &s.ApprovalNotifyFile}
+	values := []*string{&s.DatabaseFile, &s.SSOFile, &s.SSOSecretFile, &s.TLSDirectory, &s.PluginFile, &s.MFAPluginsFile, &s.ReminderFile, &s.Output, &s.ApprovalNotifyFile, &s.AlertNotifyFile}
 	for _, p := range values {
 		if *p != "" {
 			v, e := filepath.Abs(*p)
