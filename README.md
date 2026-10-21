@@ -125,3 +125,5 @@ python3 scripts/signature-vector.py
 | 本机开发 | [开发登录运行](docs/开发登录运行.md) · [模拟 SSO](docs/模拟SSO.md) · [本地信任证书](docs/本地信任证书.md) |
 
 - [运行监控与告警](docs/运行监控与告警.md)：节点、认证拒绝率、插件健康、证书到期和数据库异常。
+
+- [告警通知与升级](docs/告警通知与升级.md)：邮件、短信、Webhook插件投递、重试、静默及升级通知。
