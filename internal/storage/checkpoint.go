@@ -176,79 +176,18 @@ func (s *Store) QuarantineRestored(ctx context.Context, expected SafetyCheckpoin
 	if !matchingSafety(actual, expected) {
 		return ErrConflict
 	}
-	// 恢复后推进全库节点代次，旧节点许可即使在备份中仍未过期也不能复用。
-	if _, e = tx.ExecContext(ctx, `UPDATE keygate.runtime_cluster SET generation=generation+1 WHERE singleton`); e != nil {
-		return e
-	}
 	environment := expected.Environment
-
-	// 隔离恢复不能重放备份中的旧事故、静默或未知投递；保留历史记录，仅使旧工作失效并越过历史消费水位。
-	if schemaVersion >= 25 {
-		for _, statement := range []string{
-			`UPDATE keygate.alert_deliveries SET state='obsolete',lease_until=NULL WHERE environment=$1 AND state IN ('pending','sending','failed')`,
-			`UPDATE keygate.alert_delivery_records SET outcome='obsolete',finished_at=clock_timestamp() WHERE environment=$1 AND outcome='sending'`,
-			`UPDATE keygate.alert_incidents SET active=false WHERE environment=$1 AND active`,
-			`DELETE FROM keygate.alert_silences WHERE environment=$1`,
-			`UPDATE keygate.alert_routes SET starts_at=clock_timestamp() WHERE environment=$1`,
-			`INSERT INTO keygate.alert_delivery_cursor(environment,sequence) SELECT $1,COALESCE(max(sequence),0) FROM keygate.system_monitor_events WHERE environment=$1 ON CONFLICT(environment) DO UPDATE SET sequence=EXCLUDED.sequence`,
-		} {
-			if _, e = tx.ExecContext(ctx, statement, environment); e != nil {
-				return e
-			}
+	// 手工运维和自动还原共用同一隔离语句；全部旧根/旧版本作废，不允许旧快照遗漏的撤销事实导致复活。
+	for _, statement := range quarantineStatements(schemaVersion) {
+		var e error
+		if strings.Contains(statement, "$1") {
+			_, e = tx.ExecContext(ctx, statement, environment)
+		} else {
+			_, e = tx.ExecContext(ctx, statement)
 		}
-	}
-	if schemaVersion >= 24 {
-		if _, e = tx.ExecContext(ctx, `DELETE FROM keygate.system_monitor_samples WHERE environment=$1`, environment); e != nil {
+		if e != nil {
 			return e
 		}
-		if _, e = tx.ExecContext(ctx, `UPDATE keygate.system_monitor_alerts SET active=false,count=0,changed_at=clock_timestamp() WHERE environment=$1`, environment); e != nil {
-			return e
-		}
-	}
-	if schemaVersion >= 22 {
-		if _, e = tx.ExecContext(ctx, `UPDATE keygate.approval_notifications SET state='obsolete',lease_until=NULL WHERE environment=$1 AND state IN ('pending','sending')`, environment); e != nil {
-			return e
-		}
-	}
-	// 隔离恢复必须同时作废已执行审批产生的一次性账号设置授权。
-	if _, e = tx.ExecContext(ctx, `UPDATE keygate.account_setups SET consumed=true WHERE environment=$1 AND NOT consumed`, environment); e != nil {
-		return e
-	}
-	for _, table := range []string{"mfa_challenges", "mfa_proofs"} {
-		if _, e = tx.ExecContext(ctx, `DELETE FROM keygate.`+table+` WHERE environment=$1`, environment); e != nil {
-			return e
-		}
-	}
-	if _, e = tx.ExecContext(ctx, `UPDATE keygate.application_trust_services SET disabled=true,revision=revision+1 WHERE environment=$1`, environment); e != nil {
-		return e
-	}
-
-	if _, e = tx.ExecContext(ctx, `UPDATE keygate.browser_sessions SET revoked_at=clock_timestamp() WHERE environment=$1 AND revoked_at IS NULL`, environment); e != nil {
-		return e
-	}
-	if _, e = tx.ExecContext(ctx, `UPDATE keygate.provider_policies SET enabled=false,revision=revision+1 WHERE environment=$1`, environment); e != nil {
-		return e
-	}
-	if _, e = tx.ExecContext(ctx, `UPDATE keygate.clients SET state='disabled',revision=revision+1 WHERE environment=$1`, environment); e != nil {
-		return e
-	}
-	if _, e = tx.ExecContext(ctx, `UPDATE keygate.control_requests SET decision='cancelled' WHERE environment=$1 AND NOT executed`, environment); e != nil {
-		return e
-	}
-	if _, e = tx.ExecContext(ctx, `UPDATE keygate.sessions SET revoked_at=clock_timestamp() WHERE principal_id IN(SELECT principal_id FROM keygate.principals WHERE environment=$1) AND revoked_at IS NULL`, environment); e != nil {
-		return e
-	}
-	if _, e = tx.ExecContext(ctx, `UPDATE keygate.key_versions SET state='disabled' WHERE environment=$1 AND state IN ('pending','staged')`, environment); e != nil {
-		return e
-	}
-	if _, e = tx.ExecContext(ctx, `UPDATE keygate.recovery_tasks SET state='aborted',finished_at=clock_timestamp() WHERE environment=$1 AND state IN ('preparing','staged')`, environment); e != nil {
-		return e
-	}
-	if _, e = tx.ExecContext(ctx, `UPDATE keygate.rotation_tasks SET state='failed',completed_at=clock_timestamp() WHERE environment=$1 AND state IN ('preparing','overlap')`, environment); e != nil {
-		return e
-	}
-	if _, e = tx.ExecContext(ctx, `UPDATE keygate.audit_exports SET payload=''::bytea,expires_at=LEAST(expires_at,clock_timestamp()) WHERE environment=$1`, environment); e != nil {
-		return e
 	}
 	event, e := controlID()
 	if e != nil {
@@ -266,7 +205,7 @@ func (s *Store) QuarantineRestored(ctx context.Context, expected SafetyCheckpoin
 // CheckQuarantinedOffline 供显式恢复启动验证已隔离状态；必须先由启动方验签并核对外部最新 checkpoint。
 func (c *DevelopmentControl) CheckQuarantinedOffline(ctx context.Context) error {
 	var safe bool
-	e := c.store.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM keygate.security_domains WHERE environment=$1) AND EXISTS(SELECT 1 FROM keygate.scoped_audit s JOIN keygate.audit_events a ON a.event_id=s.event_id WHERE s.environment=$1 AND a.action='restore_quarantine') AND NOT EXISTS(SELECT 1 FROM keygate.account_setups WHERE environment=$1 AND NOT consumed) AND NOT EXISTS(SELECT 1 FROM keygate.mfa_proofs WHERE environment=$1) AND NOT EXISTS(SELECT 1 FROM keygate.mfa_challenges WHERE environment=$1) AND NOT EXISTS(SELECT 1 FROM keygate.browser_sessions WHERE environment=$1 AND revoked_at IS NULL) AND NOT EXISTS(SELECT 1 FROM keygate.provider_policies WHERE environment=$1 AND enabled) AND NOT EXISTS(SELECT 1 FROM keygate.clients WHERE environment=$1 AND state='enabled') AND NOT EXISTS(SELECT 1 FROM keygate.control_requests WHERE environment=$1 AND NOT executed AND decision IN ('pending','approved')) AND NOT EXISTS(SELECT 1 FROM keygate.sessions WHERE principal_id IN(SELECT principal_id FROM keygate.principals WHERE environment=$1) AND revoked_at IS NULL)`, c.environment).Scan(&safe)
+	e := c.store.db.QueryRowContext(ctx, quarantinedQuery, c.environment).Scan(&safe)
 	if e != nil {
 		return e
 	}
@@ -275,3 +214,5 @@ func (c *DevelopmentControl) CheckQuarantinedOffline(ctx context.Context) error 
 	}
 	return nil
 }
+
+const quarantinedQuery = `SELECT EXISTS(SELECT 1 FROM keygate.security_domains WHERE environment=$1) AND EXISTS(SELECT 1 FROM keygate.scoped_audit s JOIN keygate.audit_events a ON a.event_id=s.event_id WHERE s.environment=$1 AND a.action='restore_quarantine') AND NOT EXISTS(SELECT 1 FROM keygate.account_setups WHERE environment=$1 AND NOT consumed) AND NOT EXISTS(SELECT 1 FROM keygate.mfa_proofs WHERE environment=$1) AND NOT EXISTS(SELECT 1 FROM keygate.mfa_challenges WHERE environment=$1) AND NOT EXISTS(SELECT 1 FROM keygate.browser_sessions WHERE environment=$1 AND revoked_at IS NULL) AND NOT EXISTS(SELECT 1 FROM keygate.provider_policies WHERE environment=$1 AND enabled) AND NOT EXISTS(SELECT 1 FROM keygate.clients WHERE environment=$1 AND state='enabled') AND NOT EXISTS(SELECT 1 FROM keygate.control_requests WHERE environment=$1 AND NOT executed AND decision IN ('pending','approved')) AND NOT EXISTS(SELECT 1 FROM keygate.client_roots WHERE environment=$1 AND enabled) AND NOT EXISTS(SELECT 1 FROM keygate.key_versions WHERE environment=$1 AND state<>'compromised') AND NOT EXISTS(SELECT 1 FROM keygate.sessions WHERE principal_id IN(SELECT principal_id FROM keygate.principals WHERE environment=$1) AND revoked_at IS NULL)`
