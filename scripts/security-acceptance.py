@@ -25,6 +25,7 @@ STEPS = [
     ("signature-vector", [sys.executable, "scripts/signature-vector.py"]),
     ("database-script-boundaries", [sys.executable, "scripts/test-dev-db-scripts.py"]),
     ("postgres-race-and-failover", [sys.executable, "scripts/test-postgres.py"]),
+    ("real-ha-and-capacity", [sys.executable, "scripts/test-ha-capacity.py"]),
     ("backup-restore-drill", [sys.executable, "scripts/test-backup.py"]),
     ("known-vulnerabilities", ["go", "run", "golang.org/x/vuln/cmd/govulncheck@v1.9.0", "./..."]),
 ]
