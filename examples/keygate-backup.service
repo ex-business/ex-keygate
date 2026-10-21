@@ -1,0 +1,21 @@
+[Unit]
+Description=ExKeyGate encrypted PostgreSQL backup and independent checkpoints
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=keygate-backup
+Group=keygate-backup
+ExecStart=/opt/ex-keygate/keygate-backup -action run -config /etc/ex-keygate-backup/config.json
+Restart=on-failure
+RestartSec=60
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/ex-keygate-backups /var/lib/ex-keygate-checkpoints
+
+[Install]
+WantedBy=multi-user.target
