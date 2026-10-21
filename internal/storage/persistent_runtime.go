@@ -6,7 +6,7 @@ import (
 )
 
 const RuntimeProtocol = 1
-const RuntimeSchemaVersion = 23
+const RuntimeSchemaVersion = 24
 
 type PersistentDeployment struct {
 	Environment   string `json:"environment"`
@@ -23,9 +23,9 @@ func CheckRuntimeSchema(ctx context.Context, db *sql.DB) error {
 	return CheckRuntimeSchemaVersion(ctx, db, RuntimeSchemaVersion)
 }
 
-// CheckRuntimeSchemaVersion 仅允许当前23及显式支持的21、22升级源，仍逐条核验完整账本而不写DDL。
+// CheckRuntimeSchemaVersion 仅允许当前24及显式支持的21、22、23升级源，仍逐条核验完整账本而不写DDL。
 func CheckRuntimeSchemaVersion(ctx context.Context, db *sql.DB, version int) error {
-	if version != RuntimeSchemaVersion && version != 21 && version != 22 {
+	if version != RuntimeSchemaVersion && version != 21 && version != 22 && version != 23 {
 		return ErrConflict
 	}
 	tx, e := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
@@ -95,7 +95,7 @@ func (s *Store) RegisterPersistentDeploymentOffline(ctx context.Context, d Persi
 // UpgradePersistentDeploymentOffline 必须停服并使用外部签名检查点；所有旧节点须摘流或租约过期，代次切换使旧配置不能重新加入。
 // 检查点验证由调用者完成签名核验，此处在同一事务再次核对安全状态，避免检查与激活之间发生变更。
 func (s *Store) UpgradePersistentDeploymentOffline(ctx context.Context, old, next PersistentDeployment, expected SafetyCheckpoint, trace string) error {
-	if (old.SchemaVersion != 21 && old.SchemaVersion != 22 && old.SchemaVersion != RuntimeSchemaVersion) || !validDeployment(next) || old.Environment != next.Environment || old.ID != next.ID || next.Revision != old.Revision+1 || old.ProfileHash != next.ProfileHash || expected.Environment != old.Environment || !identifier.MatchString(trace) {
+	if (old.SchemaVersion != 21 && old.SchemaVersion != 22 && old.SchemaVersion != 23 && old.SchemaVersion != RuntimeSchemaVersion) || !validDeployment(next) || old.Environment != next.Environment || old.ID != next.ID || next.Revision != old.Revision+1 || old.ProfileHash != next.ProfileHash || expected.Environment != old.Environment || !identifier.MatchString(trace) {
 		return ErrInvalid
 	}
 	tx, e := s.db.BeginTx(ctx, nil)
