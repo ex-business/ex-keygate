@@ -147,6 +147,8 @@ func (s *Service) browserRoutes(handle func(string, http.HandlerFunc)) {
 		s.browserResponse(w, 200, client, token, session)
 	})
 	handle("POST /api/browser/{client}/authenticate", func(w http.ResponseWriter, r *http.Request) {
+		w, finish := s.observeAuthentication(w, "h5")
+		defer finish()
 		client := r.PathValue("client")
 		token, ok := s.browserCredential(w, r, client, true)
 		if !ok {

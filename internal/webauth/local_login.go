@@ -72,6 +72,8 @@ func (s *Service) localLoginRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /auth/password", s.passwordLogin)
 }
 func (s *Service) passwordLogin(w http.ResponseWriter, r *http.Request) {
+	w, finish := s.observeAuthentication(w, "password")
+	defer finish()
 	// 登录同样校验Origin及浏览器绑定的CSRF，防止攻击者让受害者登录攻击者账号。
 	token, ok := cookie(r, passwordCSRFCookie)
 	if !ok || r.URL.RawQuery != "" || r.Header.Get("Origin") != s.origin || subtle.ConstantTimeCompare([]byte(r.Header.Get("X-CSRF-Token")), []byte(csrf(token))) != 1 {

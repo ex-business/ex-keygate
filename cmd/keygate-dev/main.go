@@ -464,6 +464,8 @@ func run() error {
 	} else {
 		close(leaseDone)
 	}
+	monitorDone := make(chan struct{})
+	go func() { defer close(monitorDone); service.RunMonitoring(ctx) }()
 	approvalDone := make(chan struct{})
 	go func() { defer close(approvalDone); service.RunApprovalNotifications(ctx, approvalPlugin) }()
 	maintenanceDone := make(chan struct{})
@@ -490,6 +492,7 @@ func run() error {
 	<-done
 	<-leaseDone
 	<-approvalDone
+	<-monitorDone
 	<-maintenanceDone
 	<-reminderDone
 	if errors.Is(err, http.ErrServerClosed) {

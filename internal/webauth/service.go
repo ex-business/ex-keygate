@@ -52,6 +52,7 @@ type Config struct {
 	ClientSecret                                      string `json:"-"`
 }
 type Service struct {
+	monitor          runtimeMonitor
 	applicationTrust map[string]*applicationTrustRuntime
 	localAccounts    bool
 	passwordSlots    chan struct{}
@@ -255,6 +256,8 @@ func (s *Service) startLogin(w http.ResponseWriter, r *http.Request, browserCont
 	http.Redirect(w, r, target, 303)
 }
 func (s *Service) callback(w http.ResponseWriter, r *http.Request) {
+	w, finish := s.observeAuthentication(w, "oidc")
+	defer finish()
 	if len(r.URL.RawQuery) > 8192 {
 		fail(w, 400)
 		return

@@ -161,6 +161,7 @@ func (s *Service) flowRoutes(mux *http.ServeMux) {
 	}
 	s.approvalNotificationRoutes(handle, mux)
 	s.approvalSearchRoutes(mux)
+	s.systemMonitorRoutes(handle)
 	s.trustHistoryRoutes(mux)
 	s.trustRoutes(handle)
 	s.consoleRoutes(handle)
@@ -370,6 +371,8 @@ func (s *Service) flowRoutes(mux *http.ServeMux) {
 		w.WriteHeader(204)
 	})
 	handle("POST /api/auth/probe", func(w http.ResponseWriter, r *http.Request) {
+		w, finish := s.observeAuthentication(w, "hmac")
+		defer finish()
 		body, e := io.ReadAll(http.MaxBytesReader(w, r.Body, httpsign.MaxBody))
 		if e != nil {
 			fail(w, 413)
