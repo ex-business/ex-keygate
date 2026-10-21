@@ -160,6 +160,7 @@ func (s *Service) flowRoutes(mux *http.ServeMux) {
 		})
 	}
 	s.approvalNotificationRoutes(handle, mux)
+	s.approvalSearchRoutes(mux)
 	s.trustHistoryRoutes(mux)
 	s.trustRoutes(handle)
 	s.consoleRoutes(handle)
