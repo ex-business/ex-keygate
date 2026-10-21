@@ -54,6 +54,7 @@ func run() error {
 	runtimeNext := flag.String("runtime-next-config", "", "受控升级候选Settings JSON，不包含密钥材料")
 	runtimeCheckpoint := flag.String("runtime-checkpoint", "", "停服后的外部签名安全检查点")
 	runtimePublicKey := flag.String("runtime-public-key", "", "独立固定的检查点校验公钥")
+	alertNotifyFile := flag.String("alert-notify-plugin-file", "", "告警邮件短信Webhook的受控mTLS插件配置")
 	approvalNotifyFile := flag.String("approval-notify-plugin-file", "", "审批通知HTTPS/mTLS插件私有配置，省略时仅保留站内通知")
 	reminderFile := flag.String("trust-reminder-plugin-file", "", "证书提醒HTTPS/mTLS插件私有配置文件；省略时仅保留站内提醒")
 	trustDirectory := flag.String("trust-directory", "", "应用根及专用状态密钥私有目录；多个目录用逗号分隔，禁止包含根私钥")
@@ -92,7 +93,7 @@ func run() error {
 		defer prepareCancel()
 		var settings deployment.Settings
 		var e error
-		rt, settings, e = preparePersistent(prepareCtx, *runtimeAction, *runtimeDirectory, *runtimeKey, *runtimeNode, *runtimeNext, *runtimeCheckpoint, *runtimePublicKey, deployment.Settings{Port: *port, DatabaseFile: *databaseFile, SSOFile: *ssoFile, SSOSecretFile: *ssoSecretFile, TLSDirectory: *tlsDirectory, PluginFile: *pluginFile, MFAPluginsFile: *mfaPluginsFile, TrustDirectory: *trustDirectory, ReminderFile: *reminderFile, Output: *output, ApprovalNotifyFile: *approvalNotifyFile})
+		rt, settings, e = preparePersistent(prepareCtx, *runtimeAction, *runtimeDirectory, *runtimeKey, *runtimeNode, *runtimeNext, *runtimeCheckpoint, *runtimePublicKey, deployment.Settings{Port: *port, DatabaseFile: *databaseFile, SSOFile: *ssoFile, SSOSecretFile: *ssoSecretFile, TLSDirectory: *tlsDirectory, PluginFile: *pluginFile, MFAPluginsFile: *mfaPluginsFile, TrustDirectory: *trustDirectory, ReminderFile: *reminderFile, Output: *output, ApprovalNotifyFile: *approvalNotifyFile, AlertNotifyFile: *alertNotifyFile})
 		if e != nil {
 			return e
 		}
@@ -107,6 +108,7 @@ func run() error {
 		*trustDirectory = settings.TrustDirectory
 		*reminderFile = settings.ReminderFile
 		*approvalNotifyFile = settings.ApprovalNotifyFile
+		*alertNotifyFile = settings.AlertNotifyFile
 		*output = settings.Output
 		*enableFlow = true
 		if rt.action != "init" {
@@ -417,6 +419,19 @@ func run() error {
 		defer plugin.Close()
 		approvalPlugin = plugin
 	}
+	alertBindings, closeAlerts, e := loadAlertDelivery(*alertNotifyFile)
+	if e != nil {
+		return e
+	}
+	defer closeAlerts()
+	if *enableFlow {
+		setupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		e = service.ConfigureAlertDelivery(setupCtx, alertBindings)
+		cancel()
+		if e != nil {
+			return e
+		}
+	}
 	var cert tls.Certificate
 	var publicCA []byte
 	if *tlsDirectory != "" {
@@ -464,6 +479,8 @@ func run() error {
 	} else {
 		close(leaseDone)
 	}
+	alertDone := make(chan struct{})
+	go func() { defer close(alertDone); service.RunAlertDelivery(ctx, alertBindings) }()
 	monitorDone := make(chan struct{})
 	go func() { defer close(monitorDone); service.RunMonitoring(ctx) }()
 	approvalDone := make(chan struct{})
@@ -493,6 +510,7 @@ func run() error {
 	<-leaseDone
 	<-approvalDone
 	<-monitorDone
+	<-alertDone
 	<-maintenanceDone
 	<-reminderDone
 	if errors.Is(err, http.ErrServerClosed) {
