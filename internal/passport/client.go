@@ -65,13 +65,15 @@ func (r Request) Validate() error {
 }
 
 type Result struct {
-	OperationID  string `json:"operationId"`
-	Operation    string `json:"operation"`
-	ClientID     string `json:"clientId"`
-	Revision     int64  `json:"revision"`
-	Replayed     bool   `json:"replayed"`
-	ClientSecret string `json:"clientSecret,omitempty"`
-	RequestHash  string `json:"requestHash,omitempty"`
+	Kid            string `json:"kid,omitempty"`
+	ApprovalDigest string `json:"approvalDigest,omitempty"`
+	OperationID    string `json:"operationId"`
+	Operation      string `json:"operation"`
+	ClientID       string `json:"clientId,omitempty"`
+	Revision       int64  `json:"revision"`
+	Replayed       bool   `json:"replayed"`
+	ClientSecret   string `json:"clientSecret,omitempty"`
+	RequestHash    string `json:"requestHash,omitempty"`
 }
 type Config struct {
 	URL, ClientID, Secret string
@@ -110,8 +112,8 @@ func (c *Client) EndpointBinding() string {
 	return hex.EncodeToString(h[:])
 }
 func (c *Client) Close() { c.http.CloseIdleConnections() }
-func (c *Client) call(ctx context.Context, method, path string, b *Request) (Result, error) {
-	var result Result
+func (c *Client) exchange(ctx context.Context, method, path string, b any) (json.RawMessage, error) {
+	var result json.RawMessage
 	var body io.Reader
 	if b != nil {
 		raw, _ := json.Marshal(b)
@@ -136,9 +138,9 @@ func (c *Client) call(ctx context.Context, method, path string, b *Request) (Res
 		return result, ErrUnknown
 	}
 	var envelope struct {
-		Success bool   `json:"success"`
-		Code    string `json:"code"`
-		Data    Result `json:"data"`
+		Success bool            `json:"success"`
+		Code    string          `json:"code"`
+		Data    json.RawMessage `json:"data"`
 	}
 	if json.Unmarshal(raw, &envelope) != nil {
 		return result, ErrUnknown
@@ -153,6 +155,17 @@ func (c *Client) call(ctx context.Context, method, path string, b *Request) (Res
 		return result, ErrUnknown
 	}
 	return envelope.Data, nil
+}
+func (c *Client) call(ctx context.Context, method, path string, b any) (Result, error) {
+	raw, e := c.exchange(ctx, method, path, b)
+	if e != nil {
+		return Result{}, e
+	}
+	var out Result
+	if json.Unmarshal(raw, &out) != nil {
+		return Result{}, ErrUnknown
+	}
+	return out, nil
 }
 func validResult(b Request, r Result) bool {
 	return r.OperationID == b.OperationID && r.Operation == b.Operation && r.ClientID == b.ClientID && r.Revision == b.ExpectedRevision+1

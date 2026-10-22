@@ -460,7 +460,7 @@ func (s *Service) executeBusiness(w http.ResponseWriter, r *http.Request) {
 		s.businessError(w, r, e)
 		return
 	}
-	if data.Operation.Kind == storage.PassportIntrospection {
+	if data.Operation.Kind == storage.PassportIntrospection || data.Operation.Kind == storage.PassportJWTKind {
 		out, err := s.flow.control.PassportOutcome(r.Context(), token, id)
 		if err != nil {
 			s.businessError(w, r, err)

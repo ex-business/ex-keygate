@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Verify approvals against the actual sibling Passport on disposable local services."""
 import json
+import base64
+import sys
 import os
 import re
 from pathlib import Path
@@ -14,6 +16,7 @@ import urllib.request
 root = Path(__file__).resolve().parents[1]
 passport = Path(os.environ.get("KEYGATE_PASSPORT_CHECKOUT", root.parent / "ex-passport")).resolve()
 name = "keygate-passport-" + secrets.token_hex(6)
+jwt_mode = "--jwt" in sys.argv[1:]
 children = []
 started = False
 
@@ -47,11 +50,29 @@ try:
         env["LC_ALL"] = "C"
         env["LANG"] = "C"
         env["PASSPORT_DATABASE_URL"] = f"postgres://postgres:{password}@127.0.0.1:{db_port}/passport_test?sslmode=disable"
-        for command, package in [("passport", "passport"), ("migrate", "migrate"), ("keygen", "keygen"), ("executor", "executor-client")]:
+        for command, package in [("passport", "passport"), ("migrate", "migrate"), ("keygen", "keygen"), ("executor", "executor-client")]+([("jwt-manage","jwt-key")] if jwt_mode else []):
             run(["go", "build", "-o", str(work / command), "./cmd/" + package], passport, env)
         run([str(work / "migrate")], passport, env)
         run([str(work / "keygen"), "-out", str(work / "signing.pem")], passport, env)
-        issued = json.loads(run([str(work / "executor"), "-operation", "create", "-client-id", "keygate-test", "-actions", "create,rotate,disable", "-targets", "trade-api", "-audiences", "trade"], passport, env).stdout)
+        if jwt_mode:
+            env.update(PASSPORT_ISSUER="https://passport.example",PASSPORT_AUDIENCE="trade",PASSPORT_SIGNER_MODE="keyring")
+            entries=[];public={}
+            for kid in ("old","next","reserve"):
+                private=work/(kid+".pem");pub=work/(kid+".pub.pem")
+                run([str(work/"keygen"),"-out",str(private),"-public-out",str(pub)],passport,env)
+                der=base64.b64decode("".join(line for line in pub.read_text().splitlines() if not line.startswith("---")))
+                if len(der)!=44 or der[:12]!=bytes.fromhex("302a300506032b6570032100"):
+                    raise RuntimeError("unexpected generated Ed25519 public encoding")
+                public[kid]=base64.urlsafe_b64encode(der[-32:]).decode().rstrip("=")
+                entries.append({"kid":kid,"privateKeyFile":str(private)})
+            manifest=work/"jwt-keys.json";manifest.write_text(json.dumps({"keys":entries}));manifest.chmod(0o600)
+            public_file=work/"public-keys.json";public_file.write_text(json.dumps(public));public_file.chmod(0o600)
+            env["PASSPORT_JWT_KEYS_FILE"]=str(manifest)
+            run([str(work/"jwt-manage"),"-operation","publish","-kid","old","-public-key-file",str(work/"old.pub.pem"),"-expected-revision","0"],passport,env)
+            run([str(work/"jwt-manage"),"-operation","activate","-kid","old","-expected-revision","1"],passport,env)
+            issued=json.loads(run([str(work/"executor"),"-operation","create","-client-id","keygate-jwt-test","-actions","jwt:publish,jwt:activate,jwt:retire,jwt:revoke","-targets","old,next,reserve","-audiences","trade"],passport,env).stdout)
+        else:
+            issued=json.loads(run([str(work / "executor"), "-operation", "create", "-client-id", "keygate-test", "-actions", "create,rotate,disable", "-targets", "trade-api", "-audiences", "trade"], passport, env).stdout)
         credential = work / "executor.secret"
         credential.write_text(issued["client_secret"])
         credential.chmod(0o600)
@@ -80,9 +101,11 @@ try:
         else:
             raise RuntimeError("disposable Passport not ready")
         env.update(KEYGATE_TEST_DATABASE_URL=f"postgres://postgres:{password}@127.0.0.1:{db_port}/keygate_test?sslmode=disable", KEYGATE_TEST_PASSPORT_URL=base, KEYGATE_TEST_PASSPORT_BUSINESS_URL=f"http://127.0.0.1:{business_port}", KEYGATE_TEST_PASSPORT_EXECUTOR_SECRET_FILE=str(credential))
-        result = run(["go", "test", "-race", "-count=1", "./internal/storage", "-run", "^TestPassportRealManagement$", "-timeout", "90s"], root, env)
+        if jwt_mode:
+            env.update(KEYGATE_TEST_PASSPORT_JWT_URL=base,KEYGATE_TEST_PASSPORT_JWT_SECRET_FILE=str(credential),KEYGATE_TEST_PASSPORT_JWT_DATABASE_URL=env["PASSPORT_DATABASE_URL"],KEYGATE_TEST_PASSPORT_OWNED_FIXTURE="1",KEYGATE_TEST_PASSPORT_JWT_PUBLIC_FILE=str(public_file))
+        result = run(["go", "test", "-race", "-count=1", "./internal/storage", "-run", "^TestPassportJWTRealManagement$" if jwt_mode else "^TestPassportRealManagement$", "-timeout", "90s"], root, env)
         print(result.stdout.decode(), end="")
-        print("PASS: actual Passport create/rotate/disable, encrypted delivery, lost-response query recovery and target isolation")
+        print("PASS: approved JWT publish/activate/retire/revoke, global version, digest-bound receipts, lost-response query recovery and approved standby activation" if jwt_mode else "PASS: actual Passport create/rotate/disable, encrypted delivery, lost-response query recovery and target isolation")
 except subprocess.CalledProcessError as error:
     # Do not dump subprocess commands, environment or credential output.
     diagnostic = error.stdout.decode(errors="replace") + error.stderr.decode(errors="replace")

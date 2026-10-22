@@ -311,6 +311,13 @@ func run() error {
 	if passportAdapter != nil {
 		defer passportAdapter.Close()
 	}
+	jwtAdapter, e := configurePassportJWT(service)
+	if e != nil {
+		return e
+	}
+	if jwtAdapter != nil {
+		defer jwtAdapter.Close()
+	}
 	if *enableFlow {
 		if e := service.ConfigureDevelopmentPlugins(startup, *pluginFile); e != nil {
 			return errors.New("开发插件装配失败")

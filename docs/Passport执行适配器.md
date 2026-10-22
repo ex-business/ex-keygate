@@ -100,3 +100,5 @@ python3 scripts/test-passport-adapter.py
 ```
 
 第二条可通过 `KEYGATE_PASSPORT_CHECKOUT` 指定 Passport 工作副本。真实链路验证审批后创建、轮换、禁用、受限目标、RSA 密文交付、旧凭证失效，以及远程完成后丢弃响应、按编号查询恢复且没有第二次 POST。存储层故障测试另覆盖超时、重启、并发重试、查询不可用、本地提交失败和审批人撤权。真实网络 mTLS 仍待环境验收。
+
+JWT 密钥生命周期使用独立执行器和配置，不继承本适配器权限。部署需 Passport 008、009，KeyGate 复用 schema 26；见 [Passport-JWT审批.md](Passport-JWT审批.md)。

@@ -13,6 +13,18 @@ func (s *Service) ConfigurePassport(p *passport.Client) error {
 	return s.flow.control.ConfigurePassport(p)
 }
 func (s *Service) passportRoutes(handle func(string, http.HandlerFunc)) {
+	handle("GET /api/passport/jwt-keys", func(w http.ResponseWriter, r *http.Request) {
+		token, ok := s.businessSession(w, r, false)
+		if !ok {
+			return
+		}
+		out, e := s.flow.control.PassportJWTState(r.Context(), token)
+		if e != nil {
+			s.businessError(w, r, e)
+			return
+		}
+		businessJSON(w, 200, out)
+	})
 	handle("GET /api/requests/{id}/passport-result", func(w http.ResponseWriter, r *http.Request) {
 		token, ok := s.businessSession(w, r, false)
 		if !ok {
@@ -29,4 +41,11 @@ func (s *Service) passportRoutes(handle func(string, http.HandlerFunc)) {
 		}
 		businessJSON(w, 200, out)
 	})
+}
+
+func (s *Service) ConfigurePassportJWT(p *passport.Client) error {
+	if s.handlerStarted.Load() || s.flow == nil {
+		return ErrConfig
+	}
+	return s.flow.control.ConfigurePassportJWT(p)
 }

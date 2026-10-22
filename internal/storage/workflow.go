@@ -27,6 +27,7 @@ const (
 )
 
 type ControlOperation struct {
+	JWT                         *PassportJWT        `json:"jwt,omitempty"`
 	Passport                    *PassportOperation  `json:"passport,omitempty"`
 	Maintenance                 *AccountMaintenance `json:"maintenance,omitempty"`
 	Governance                  *GovernanceChange   `json:"governance,omitempty"`
@@ -121,6 +122,12 @@ func (c *DevelopmentControl) eligible(ctx context.Context, tx *sql.Tx, id string
 	return m, e
 }
 func (c *DevelopmentControl) validateOperation(ctx context.Context, tx *sql.Tx, op ControlOperation) error {
+	if op.Kind == PassportJWTKind {
+		return c.validatePassportJWT(op)
+	}
+	if op.JWT != nil {
+		return ErrInvalid
+	}
 	if op.Kind == PassportIntrospection {
 		return c.validatePassportOperation(op)
 	}
@@ -234,6 +241,13 @@ func (c *DevelopmentControl) Submit(ctx context.Context, token string, op Contro
 		op.Passport.OperationID = operationID
 		op.Passport.EndpointBinding = c.passport.EndpointBinding()
 	}
+	if op.Kind == PassportJWTKind {
+		var err error
+		op, err = c.bindPassportJWT(op, a.id, idempotency)
+		if err != nil {
+			return ControlRequest{}, err
+		}
+	}
 	params, e := manifest.Canonical(op)
 	if e != nil {
 		return ControlRequest{}, ErrInvalid
@@ -243,11 +257,11 @@ func (c *DevelopmentControl) Submit(ctx context.Context, token string, op Contro
 	if e != nil {
 		return ControlRequest{}, e
 	}
-	if (op.Kind == ProvisionRoot || op.Kind == EnableProvider || isGovernance(op.Kind)) && applicant.GrantScope != "" {
+	if (op.Kind == ProvisionRoot || op.Kind == EnableProvider || isGovernance(op.Kind) || op.Kind == PassportJWTKind) && applicant.GrantScope != "" {
 		return ControlRequest{}, ErrDenied
 	}
 	var admin *controlMember
-	if op.Kind == EnableProvider || isGovernance(op.Kind) {
+	if op.Kind == EnableProvider || isGovernance(op.Kind) || op.Kind == PassportJWTKind {
 		m, e := c.eligible(ctx, tx, a.id, access.PolicyAdmin, "")
 		if e != nil {
 			return ControlRequest{}, e
@@ -318,7 +332,7 @@ func (c *DevelopmentControl) Submit(ctx context.Context, token string, op Contro
 		if e != nil {
 			return ControlRequest{}, e
 		}
-		if (op.Kind == ProvisionRoot || op.Kind == EnableProvider || isGovernance(op.Kind)) && m.GrantScope != "" {
+		if (op.Kind == ProvisionRoot || op.Kind == EnableProvider || isGovernance(op.Kind) || op.Kind == PassportJWTKind) && m.GrantScope != "" {
 			if sequential {
 				return ControlRequest{}, ErrDenied
 			}
@@ -457,7 +471,7 @@ func (c *DevelopmentControl) liveManifest(ctx context.Context, tx *sql.Tx, m con
 			return ErrConflict
 		}
 	}
-	if m.Operation.Kind == EnableProvider || isGovernance(m.Operation.Kind) {
+	if m.Operation.Kind == EnableProvider || isGovernance(m.Operation.Kind) || m.Operation.Kind == PassportJWTKind {
 		admin, e := c.eligible(ctx, tx, m.Applicant.PrincipalID, access.PolicyAdmin, "")
 		if e != nil {
 			return e
@@ -683,6 +697,13 @@ func (c *DevelopmentControl) executePreparedAs(ctx context.Context, id, digest, 
 		return ErrConflict
 	}
 
+	if m.Operation.Kind == PassportJWTKind {
+		if prepared != nil {
+			return ErrInvalid
+		}
+		tx.Rollback()
+		return c.executePassportJWT(ctx, token, id, digest, trace)
+	}
 	if m.Operation.Kind == PassportIntrospection {
 		if prepared != nil {
 			return ErrInvalid

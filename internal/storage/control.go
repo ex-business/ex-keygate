@@ -26,6 +26,7 @@ var (
 // DevelopmentControl 仅供开发/测试可信适配器调用；不接收外部自报的 actor 或 MFA。
 // profile 固定在服务构造时，避免请求方借另一身份源的会话认领本地权限。
 type DevelopmentControl struct {
+	passportJWT          *passport.Client
 	passport             *passport.Client
 	store                *Store
 	environment, profile string
