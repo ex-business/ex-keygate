@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"ex-keygate/internal/httpsign"
+	"ex-keygate/internal/passport"
 	"ex-keygate/internal/storage"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -32,6 +33,8 @@ func (s *Service) businessError(w http.ResponseWriter, r *http.Request, e error)
 		status = 403
 	case errors.Is(e, storage.ErrInvalid):
 		status = 400
+	case errors.Is(e, passport.ErrRejected):
+		status = 409
 	case errors.Is(e, storage.ErrConflict):
 		status = 409
 	case errors.Is(e, sql.ErrNoRows):
@@ -398,6 +401,7 @@ func (s *Service) flowRoutes(mux *http.ServeMux) {
 		}
 		businessJSON(w, 200, map[string]any{"authenticated": true, "requestId": requestID(r)})
 	})
+	s.passportRoutes(handle)
 	s.h5Routes(mux)
 	mux.HandleFunc("GET /manage", s.managePage)
 	mux.HandleFunc("GET /manage.js", s.manageScript)
@@ -454,6 +458,15 @@ func (s *Service) executeBusiness(w http.ResponseWriter, r *http.Request) {
 	}
 	if e != nil {
 		s.businessError(w, r, e)
+		return
+	}
+	if data.Operation.Kind == storage.PassportIntrospection {
+		out, err := s.flow.control.PassportOutcome(r.Context(), token, id)
+		if err != nil {
+			s.businessError(w, r, err)
+			return
+		}
+		businessJSON(w, 200, map[string]any{"executed": true, "requestId": id, "passport": out})
 		return
 	}
 	businessJSON(w, 200, map[string]any{"executed": true, "requestId": id})

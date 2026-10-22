@@ -34,7 +34,7 @@ var checkpointTables = []checkpointTable{
 	{"runtime_cluster", "$1::text<>''"}, {"runtime_nodes", "$1::text<>''"},
 	{"security_domains", "environment=$1"}, {"principals", "environment=$1"}, {"role_grants", "environment=$1"},
 	{"auth_profiles", "environment=$1"}, {"clients", "environment=$1"}, {"control_policies", "environment=$1"}, {"control_policy_members", "environment=$1"},
-	{"control_requests", "environment=$1"}, {"control_votes", "environment=$1"}, {"control_skips", "environment=$1"}, {"control_executions", "environment=$1"}, {"control_idempotency", "environment=$1"},
+	{"passport_executions", "environment=$1"}, {"control_requests", "environment=$1"}, {"control_votes", "environment=$1"}, {"control_skips", "environment=$1"}, {"control_executions", "environment=$1"}, {"control_idempotency", "environment=$1"},
 	{"client_roots", "environment=$1"}, {"key_versions", "environment=$1"}, {"rotation_tasks", "environment=$1"}, {"recovery_tasks", "environment=$1"}, {"revocations", "environment=$1"},
 	{"provider_candidates", "environment=$1"}, {"provider_policies", "environment=$1"}, {"provider_checks", "environment=$1"},
 	{"root_budgets", "root_id IN (SELECT root_id FROM keygate.client_roots WHERE environment=$1)"},
@@ -64,7 +64,7 @@ func captureSafety(ctx context.Context, tx *sql.Tx, environment string) (SafetyC
 	}
 	for _, table := range checkpointTables {
 		// 旧版本检查点用于原子升级，仅跳过其版本之后才新增的表；已存在表缺失仍失败。
-		if (schemaVersion < 25 && strings.HasPrefix(table.name, "alert_")) || (schemaVersion < 24 && (table.name == "system_monitor_samples" || table.name == "system_monitor_alerts" || table.name == "system_monitor_events")) || (schemaVersion == 21 && table.name == "approval_notifications") || (schemaVersion < 23 && (table.name == "approval_delivery_records" || table.name == "approval_notification_alerts")) {
+		if (schemaVersion < 26 && table.name == "passport_executions") || (schemaVersion < 25 && strings.HasPrefix(table.name, "alert_")) || (schemaVersion < 24 && (table.name == "system_monitor_samples" || table.name == "system_monitor_alerts" || table.name == "system_monitor_events")) || (schemaVersion == 21 && table.name == "approval_notifications") || (schemaVersion < 23 && (table.name == "approval_delivery_records" || table.name == "approval_notification_alerts")) {
 			continue
 		}
 		rows, e := tx.QueryContext(ctx, `SELECT to_jsonb(x)::text FROM (SELECT * FROM keygate.`+table.name+` WHERE `+table.where+`) x ORDER BY to_jsonb(x)::text COLLATE "C"`, environment)
@@ -162,7 +162,7 @@ func (s *Store) QuarantineRestored(ctx context.Context, expected SafetyCheckpoin
 	}
 	for _, table := range checkpointTables {
 		// 旧版本检查点用于原子升级，仅跳过其版本之后才新增的表；已存在表缺失仍失败。
-		if (schemaVersion < 25 && strings.HasPrefix(table.name, "alert_")) || (schemaVersion < 24 && (table.name == "system_monitor_samples" || table.name == "system_monitor_alerts" || table.name == "system_monitor_events")) || (schemaVersion == 21 && table.name == "approval_notifications") || (schemaVersion < 23 && (table.name == "approval_delivery_records" || table.name == "approval_notification_alerts")) {
+		if (schemaVersion < 26 && table.name == "passport_executions") || (schemaVersion < 25 && strings.HasPrefix(table.name, "alert_")) || (schemaVersion < 24 && (table.name == "system_monitor_samples" || table.name == "system_monitor_alerts" || table.name == "system_monitor_events")) || (schemaVersion == 21 && table.name == "approval_notifications") || (schemaVersion < 23 && (table.name == "approval_delivery_records" || table.name == "approval_notification_alerts")) {
 			continue
 		}
 		if _, e = tx.ExecContext(ctx, `LOCK TABLE keygate.`+table.name+` IN EXCLUSIVE MODE NOWAIT`); e != nil {

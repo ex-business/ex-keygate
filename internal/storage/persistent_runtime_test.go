@@ -105,7 +105,7 @@ func TestPersistentSchema21ControlledUpgrade(t *testing.T) {
 		t.Fatal(e)
 	}
 	// 仅一次性测试库回建真实21结构，验证新DDL不会在普通启动或失败升级时提前落地。
-	if _, e := f.db.Exec(`DROP TABLE keygate.alert_delivery_records; DROP TABLE keygate.alert_deliveries; DROP TABLE keygate.alert_silences; DROP TABLE keygate.alert_incidents; DROP TABLE keygate.alert_delivery_cursor; DROP TABLE keygate.alert_routes; DROP TABLE keygate.system_monitor_samples; DROP TABLE keygate.system_monitor_alerts; DROP TABLE keygate.system_monitor_events; DROP TABLE keygate.approval_delivery_records; DROP TABLE keygate.approval_notification_alerts; DROP TABLE keygate.approval_notifications; ALTER TABLE keygate.control_requests DROP COLUMN withdrawn_by,DROP COLUMN withdrawal_reason,DROP COLUMN withdrawn_at,DROP COLUMN notice_terminal,DROP COLUMN notice_next_scan; DELETE FROM keygate.schema_migrations WHERE version>=22`); e != nil {
+	if _, e := f.db.Exec(`DROP TABLE keygate.passport_executions; DROP TABLE keygate.alert_delivery_records; DROP TABLE keygate.alert_deliveries; DROP TABLE keygate.alert_silences; DROP TABLE keygate.alert_incidents; DROP TABLE keygate.alert_delivery_cursor; DROP TABLE keygate.alert_routes; DROP TABLE keygate.system_monitor_samples; DROP TABLE keygate.system_monitor_alerts; DROP TABLE keygate.system_monitor_events; DROP TABLE keygate.approval_delivery_records; DROP TABLE keygate.approval_notification_alerts; DROP TABLE keygate.approval_notifications; ALTER TABLE keygate.control_requests DROP COLUMN withdrawn_by,DROP COLUMN withdrawal_reason,DROP COLUMN withdrawn_at,DROP COLUMN notice_terminal,DROP COLUMN notice_next_scan; DELETE FROM keygate.schema_migrations WHERE version>=22`); e != nil {
 		t.Fatal(e)
 	}
 	defer func() {
@@ -172,7 +172,7 @@ func TestPersistentSchema22ControlledUpgrade(t *testing.T) {
 		t.Fatal(e)
 	}
 	// 仅一次性测试库回建真实22结构，验证新DDL不会在普通启动或失败升级时提前落地。
-	if _, e := f.db.Exec(`DROP TABLE keygate.alert_delivery_records; DROP TABLE keygate.alert_deliveries; DROP TABLE keygate.alert_silences; DROP TABLE keygate.alert_incidents; DROP TABLE keygate.alert_delivery_cursor; DROP TABLE keygate.alert_routes; DROP TABLE keygate.system_monitor_samples; DROP TABLE keygate.system_monitor_alerts; DROP TABLE keygate.system_monitor_events; DROP INDEX keygate.approval_notice_operations; DROP TABLE keygate.approval_delivery_records; DROP TABLE keygate.approval_notification_alerts; ALTER TABLE keygate.approval_notifications DROP COLUMN resend_count,DROP COLUMN last_resend_at; DELETE FROM keygate.schema_migrations WHERE version>=23`); e != nil {
+	if _, e := f.db.Exec(`DROP TABLE keygate.passport_executions; DROP TABLE keygate.alert_delivery_records; DROP TABLE keygate.alert_deliveries; DROP TABLE keygate.alert_silences; DROP TABLE keygate.alert_incidents; DROP TABLE keygate.alert_delivery_cursor; DROP TABLE keygate.alert_routes; DROP TABLE keygate.system_monitor_samples; DROP TABLE keygate.system_monitor_alerts; DROP TABLE keygate.system_monitor_events; DROP INDEX keygate.approval_notice_operations; DROP TABLE keygate.approval_delivery_records; DROP TABLE keygate.approval_notification_alerts; ALTER TABLE keygate.approval_notifications DROP COLUMN resend_count,DROP COLUMN last_resend_at; DELETE FROM keygate.schema_migrations WHERE version>=23`); e != nil {
 		t.Fatal(e)
 	}
 	defer func() {
@@ -239,7 +239,7 @@ func TestPersistentSchema23ControlledUpgrade(t *testing.T) {
 		t.Fatal(e)
 	}
 	// 仅一次性测试库回建真实24结构，验证新DDL不会在普通启动或失败升级时提前落地。
-	if _, e := f.db.Exec(`DROP TABLE keygate.alert_delivery_records; DROP TABLE keygate.alert_deliveries; DROP TABLE keygate.alert_silences; DROP TABLE keygate.alert_incidents; DROP TABLE keygate.alert_delivery_cursor; DROP TABLE keygate.alert_routes; DROP TABLE keygate.system_monitor_samples; DROP TABLE keygate.system_monitor_alerts; DROP TABLE keygate.system_monitor_events; DELETE FROM keygate.schema_migrations WHERE version>=24`); e != nil {
+	if _, e := f.db.Exec(`DROP TABLE keygate.passport_executions; DROP TABLE keygate.alert_delivery_records; DROP TABLE keygate.alert_deliveries; DROP TABLE keygate.alert_silences; DROP TABLE keygate.alert_incidents; DROP TABLE keygate.alert_delivery_cursor; DROP TABLE keygate.alert_routes; DROP TABLE keygate.system_monitor_samples; DROP TABLE keygate.system_monitor_alerts; DROP TABLE keygate.system_monitor_events; DELETE FROM keygate.schema_migrations WHERE version>=24`); e != nil {
 		t.Fatal(e)
 	}
 	defer func() {
@@ -306,7 +306,7 @@ func TestPersistentSchema24ControlledUpgrade(t *testing.T) {
 		t.Fatal(e)
 	}
 	// 仅一次性测试库回建真实24结构，验证新DDL不会在普通启动或失败升级时提前落地。
-	if _, e := f.db.Exec(`DROP TABLE keygate.alert_delivery_records; DROP TABLE keygate.alert_deliveries; DROP TABLE keygate.alert_silences; DROP TABLE keygate.alert_incidents; DROP TABLE keygate.alert_delivery_cursor; DROP TABLE keygate.alert_routes;  DELETE FROM keygate.schema_migrations WHERE version>=25`); e != nil {
+	if _, e := f.db.Exec(`DROP TABLE keygate.passport_executions; DROP TABLE keygate.alert_delivery_records; DROP TABLE keygate.alert_deliveries; DROP TABLE keygate.alert_silences; DROP TABLE keygate.alert_incidents; DROP TABLE keygate.alert_delivery_cursor; DROP TABLE keygate.alert_routes;  DELETE FROM keygate.schema_migrations WHERE version>=25`); e != nil {
 		t.Fatal(e)
 	}
 	defer func() {
@@ -360,6 +360,73 @@ func TestPersistentSchema24ControlledUpgrade(t *testing.T) {
 		t.Fatal("升级注册不一致", e)
 	}
 	if e = CheckRuntimeSchemaVersion(ctx, f.db, 24); !errors.Is(e, ErrConflict) {
+		t.Fatal("旧版本接受新schema", e)
+	}
+}
+
+func TestPersistentSchema25ControlledUpgrade(t *testing.T) {
+	f := newControlFixture(t)
+	ctx := context.Background()
+	defer f.db.Exec(`DELETE FROM keygate.runtime_nodes; UPDATE keygate.runtime_cluster SET enabled=false,cluster_id='',configuration_hash='',generation=generation+1`)
+	d := PersistentDeployment{Environment: f.c.environment, ID: unique(t), Revision: 1, ConfigHash: strings.Repeat("c", 64), ProfileHash: f.profile, Protocol: RuntimeProtocol, SchemaVersion: RuntimeSchemaVersion}
+	if e := f.c.store.RegisterPersistentDeploymentOffline(ctx, d, unique(t)); e != nil {
+		t.Fatal(e)
+	}
+	// 仅一次性测试库回建真实25结构，验证新DDL不会在普通启动或失败升级时提前落地。
+	if _, e := f.db.Exec(`DROP TABLE keygate.passport_executions; DELETE FROM keygate.schema_migrations WHERE version>=26`); e != nil {
+		t.Fatal(e)
+	}
+	defer func() {
+		tx, e := f.db.BeginTx(ctx, nil)
+		if e != nil {
+			t.Error(e)
+			return
+		}
+		defer tx.Rollback()
+		if e = migrateControl(ctx, tx); e == nil {
+			e = tx.Commit()
+		}
+		if e != nil {
+			t.Error(e)
+		}
+	}()
+	if _, e := f.db.Exec(`UPDATE keygate.persistent_deployments SET schema_version=25 WHERE environment=$1`, d.Environment); e != nil {
+		t.Fatal(e)
+	}
+	d.SchemaVersion = 25
+	if e := CheckRuntimeSchema(ctx, f.db); !errors.Is(e, ErrConflict) {
+		t.Fatal("普通启动接受旧schema", e)
+	}
+	if e := CheckRuntimeSchemaVersion(ctx, f.db, 25); e != nil {
+		t.Fatal(e)
+	}
+	cp, e := f.c.store.CaptureSafetyCheckpoint(ctx, d.Environment)
+	if e != nil {
+		t.Fatal(e)
+	}
+	next := d
+	next.SchemaVersion = RuntimeSchemaVersion
+	next.Revision = 2
+	next.ConfigHash = strings.Repeat("d", 64)
+	stale := d
+	stale.Revision = 3
+	if e = f.c.store.UpgradePersistentDeploymentOffline(ctx, stale, func() PersistentDeployment { v := next; v.Revision = 4; return v }(), cp, unique(t)); !errors.Is(e, ErrConflict) {
+		t.Fatal("过期修订未拒绝", e)
+	}
+	if e = CheckRuntimeSchemaVersion(ctx, f.db, 25); e != nil {
+		t.Fatal("失败升级未回滚DDL", e)
+	}
+	if e = f.c.store.UpgradePersistentDeploymentOffline(ctx, d, next, cp, unique(t)); e != nil {
+		t.Fatal(e)
+	}
+	if e = CheckRuntimeSchema(ctx, f.db); e != nil {
+		t.Fatal(e)
+	}
+	actual, e := f.c.store.PersistentDeployment(ctx, d.Environment)
+	if e != nil || actual != next {
+		t.Fatal("升级注册不一致", e)
+	}
+	if e = CheckRuntimeSchemaVersion(ctx, f.db, 25); !errors.Is(e, ErrConflict) {
 		t.Fatal("旧版本接受新schema", e)
 	}
 }

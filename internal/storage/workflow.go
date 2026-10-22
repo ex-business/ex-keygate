@@ -27,6 +27,7 @@ const (
 )
 
 type ControlOperation struct {
+	Passport                    *PassportOperation  `json:"passport,omitempty"`
 	Maintenance                 *AccountMaintenance `json:"maintenance,omitempty"`
 	Governance                  *GovernanceChange   `json:"governance,omitempty"`
 	TrustCertificate            []byte              `json:"trustCertificate,omitempty"`
@@ -120,6 +121,12 @@ func (c *DevelopmentControl) eligible(ctx context.Context, tx *sql.Tx, id string
 	return m, e
 }
 func (c *DevelopmentControl) validateOperation(ctx context.Context, tx *sql.Tx, op ControlOperation) error {
+	if op.Kind == PassportIntrospection {
+		return c.validatePassportOperation(op)
+	}
+	if op.Passport != nil {
+		return ErrInvalid
+	}
 	if !access.ValidID(op.ClientID) || op.ExpectedRevision > 9007199254740991 {
 		return ErrInvalid
 	}
@@ -204,11 +211,6 @@ func (c *DevelopmentControl) Submit(ctx context.Context, token string, op Contro
 	if !access.ValidID(idempotency) || !access.ValidID(trace) {
 		return ControlRequest{}, ErrInvalid
 	}
-	params, e := manifest.Canonical(op)
-	if e != nil {
-		return ControlRequest{}, ErrInvalid
-	}
-	parameterDigest := digestBytes(params)
 	tx, e := c.begin(ctx)
 	if e != nil {
 		return ControlRequest{}, e
@@ -218,6 +220,25 @@ func (c *DevelopmentControl) Submit(ctx context.Context, token string, op Contro
 	if e != nil {
 		return ControlRequest{}, e
 	}
+
+	if op.Kind == PassportIntrospection && op.Passport != nil {
+		if c.passport == nil {
+			return ControlRequest{}, ErrInvalid
+		}
+		copy := *op.Passport
+		op.Passport = &copy
+		operationID := digestBytes([]byte(c.environment + "\x00" + a.id + "\x00" + idempotency))
+		if (copy.OperationID != "" && copy.OperationID != operationID) || (copy.EndpointBinding != "" && copy.EndpointBinding != c.passport.EndpointBinding()) {
+			return ControlRequest{}, ErrConflict
+		}
+		op.Passport.OperationID = operationID
+		op.Passport.EndpointBinding = c.passport.EndpointBinding()
+	}
+	params, e := manifest.Canonical(op)
+	if e != nil {
+		return ControlRequest{}, ErrInvalid
+	}
+	parameterDigest := digestBytes(params)
 	applicant, e := c.eligible(ctx, tx, a.id, access.Requester, operationScope(op))
 	if e != nil {
 		return ControlRequest{}, e
@@ -660,6 +681,14 @@ func (c *DevelopmentControl) executePreparedAs(ctx context.Context, id, digest, 
 	}
 	if subtle.ConstantTimeCompare([]byte(digest), []byte(r.Digest)) != 1 {
 		return ErrConflict
+	}
+
+	if m.Operation.Kind == PassportIntrospection {
+		if prepared != nil {
+			return ErrInvalid
+		}
+		tx.Rollback()
+		return c.executePassport(ctx, token, id, digest, trace)
 	}
 	if r.Executed {
 		if prepared != nil && prepared.newRoot != nil {

@@ -303,6 +303,14 @@ func run() error {
 			return errors.New("simulated key workflow initialization failed")
 		}
 	}
+
+	passportAdapter, e := configurePassport(service)
+	if e != nil {
+		return e
+	}
+	if passportAdapter != nil {
+		defer passportAdapter.Close()
+	}
 	if *enableFlow {
 		if e := service.ConfigureDevelopmentPlugins(startup, *pluginFile); e != nil {
 			return errors.New("开发插件装配失败")
